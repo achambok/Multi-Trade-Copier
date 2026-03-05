@@ -1,0 +1,49 @@
+{
+  "mqtt_broker":    "tcp://localhost:1883",
+  "master_topic":   "trading/master",
+  "master_equity":  10000,
+  "symbol_map_path": "config/symbols.json",
+  "slaves": [
+    {
+      "id":         "tl_acc1",
+      "type":       "tradelocker",
+      "base_url":   "https://demo.tradelocker.com/backend-service",
+      "account_id": "REPLACE_ACCOUNT_ID",
+      "email":      "REPLACE_EMAIL",
+      "password":   "REPLACE_PASSWORD",
+      "server_id":  "REPLACE_SERVER_ID"
+    },
+    {
+      "id":         "mt_acc1",
+      "type":       "matchtrade",
+      "base_url":   "https://broker.matchtrade.com/api",
+      "account_id": "REPLACE_ACCOUNT_ID",
+      "api_key":    "REPLACE_API_KEY",
+      "stomp_addr": "broker.matchtrade.com:61613"
+    },
+    {
+      "id":           "tv_acc1",
+      "type":         "tradovate",
+      "base_url":     "https://demo.tradovateapi.com/v1",
+      "account_id":   "REPLACE_ACCOUNT_ID",
+      "api_key":      "REPLACE_CID",
+      "username":     "REPLACE_USERNAME",
+      "password":     "REPLACE_PASSWORD",
+      "device_id":    "REPLACE_DEVICE_UUID",
+      "app_id":       "Sample App",
+      "app_version":  "1.0"
+    },
+    {
+      "id":         "vm_mt4",
+      "type":       "vm_slave",
+      "account_id": "vm_mt4",
+      "equity":     5000
+    },
+    {
+      "id":         "vm_mt5",
+      "type":       "vm_slave",
+      "account_id": "vm_mt5",
+      "equity":     5000
+    }
+  ]
+}

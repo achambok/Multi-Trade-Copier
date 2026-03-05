@@ -1,0 +1,32 @@
+{
+  "XAUUSD": {
+    "tradelocker": "GOLD",
+    "matchtrade":  "XAUUSD",
+    "tradovate":   "XAUUSD",
+    "vm_slave":    "XAUUSD.pro"
+  },
+  "EURUSD": {
+    "tradelocker": "EURUSD",
+    "matchtrade":  "EURUSD",
+    "tradovate":   "EURUSD",
+    "vm_slave":    "EURUSD"
+  },
+  "GBPUSD": {
+    "tradelocker": "GBPUSD",
+    "matchtrade":  "GBPUSD",
+    "tradovate":   "GBPUSD",
+    "vm_slave":    "GBPUSD"
+  },
+  "USDJPY": {
+    "tradelocker": "USDJPY",
+    "matchtrade":  "USDJPY",
+    "tradovate":   "USDJPY",
+    "vm_slave":    "USDJPY"
+  },
+  "BTCUSD": {
+    "tradelocker": "BTCUSD",
+    "matchtrade":  "BTCUSD",
+    "tradovate":   "BTCUSD",
+    "vm_slave":    "BTCUSD"
+  }
+}

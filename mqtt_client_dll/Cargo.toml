@@ -1,0 +1,14 @@
+[package]
+name = "mqtt_client_dll"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "MQTTClient"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+strip = true

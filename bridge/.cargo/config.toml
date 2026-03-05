@@ -1,0 +1,10 @@
+[build]
+target = "i686-pc-windows-gnu"
+
+[target.i686-pc-windows-gnu]
+rustflags = [
+    "-C", "panic=abort",
+    "-C", "link-arg=-nodefaultlibs",
+    "-C", "link-arg=-lkernel32",
+    "-C", "link-arg=-lws2_32",
+]
