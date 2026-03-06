@@ -145,13 +145,13 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest&     req,
                         const MqlTradeResult&      res) {
    if (trans.type == TRADE_TRANSACTION_DEAL_ADD) {
-      PrintFormat("TRS Slave MT5: Deal deal=%d order=%d sym=%s vol=%.2f price=%.5f",
-                  trans.deal, trans.order, trans.symbol, trans.volume, trans.price);
-      // Upgrade map entry: order ticket → actual deal ticket
+      PrintFormat("TRS Slave MT5: Deal deal=%d order=%d position=%d sym=%s vol=%.2f price=%.5f",
+                  trans.deal, trans.order, trans.position, trans.symbol, trans.volume, trans.price);
+      // Store the POSITION ticket (not deal ticket) — PositionSelectByTicket requires it
       for (int i = 0; i < g_mapCount; i++) {
          if (g_map[i].dealTicket == (ulong)trans.order) {
-            g_map[i].dealTicket = trans.deal;
-            PrintFormat("TRS Slave MT5: Map updated master=%d → deal=%d", g_map[i].masterTicket, trans.deal);
+            g_map[i].dealTicket = trans.position;
+            PrintFormat("TRS Slave MT5: Map updated master=%d → position=%d", g_map[i].masterTicket, trans.position);
             break;
          }
       }
