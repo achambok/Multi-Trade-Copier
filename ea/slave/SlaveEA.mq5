@@ -246,38 +246,38 @@ void RetryPending() {
 
 void ProcessPending(int idx) {
    if (idx < 0 || idx >= g_pendingCount) return;
-   PendingOrder &po = g_pending[idx];
 
    // Give up after 50 retries (~5 seconds at 100ms timer)
-   if (po.retries > 50) {
-      PrintFormat("TRS Slave MT5: Giving up on sym=%s after 50 retries", po.symbol);
+   if (g_pending[idx].retries > 50) {
+      PrintFormat("TRS Slave MT5: Giving up on sym=%s after 50 retries", g_pending[idx].symbol);
       RemovePending(idx);
       return;
    }
-   po.retries++;
+   g_pending[idx].retries++;
 
    // Already mapped (duplicate message)
-   if (FindMap(po.masterTicket) >= 0) { RemovePending(idx); return; }
+   if (FindMap(g_pending[idx].masterTicket) >= 0) { RemovePending(idx); return; }
 
-   if (!SymbolSelect(po.symbol, true)) {
-      PrintFormat("TRS Slave MT5: SymbolSelect failed '%s' retry=%d err=%d", po.symbol, po.retries, GetLastError());
+   string sym = g_pending[idx].symbol;
+   if (!SymbolSelect(sym, true)) {
+      PrintFormat("TRS Slave MT5: SymbolSelect failed '%s' retry=%d err=%d", sym, g_pending[idx].retries, GetLastError());
       return;
    }
 
-   double ask = SymbolInfoDouble(po.symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(po.symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
 
    if (ask <= 0 || bid <= 0) {
-      if (po.retries == 1)
-         PrintFormat("TRS Slave MT5: Waiting for price '%s'...", po.symbol);
+      if (g_pending[idx].retries == 1)
+         PrintFormat("TRS Slave MT5: Waiting for price '%s'...", sym);
       return;  // try again next tick
    }
 
    // Clamp to broker lot limits
-   double minLot  = SymbolInfoDouble(po.symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(po.symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(po.symbol, SYMBOL_VOLUME_STEP);
-   double vol = po.volume;
+   double minLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double vol = g_pending[idx].volume;
    if (minLot > 0 && vol < minLot)  vol = minLot;
    if (maxLot > 0 && vol > maxLot)  vol = maxLot;
    if (lotStep > 0) vol = MathRound(vol / lotStep) * lotStep;
@@ -285,12 +285,12 @@ void ProcessPending(int idx) {
 
    ENUM_ORDER_TYPE orderType;
    double          reqPrice;
-   if (po.orderType == 0) { orderType = ORDER_TYPE_BUY;  reqPrice = ask; }
-   else                   { orderType = ORDER_TYPE_SELL; reqPrice = bid; }
+   if (g_pending[idx].orderType == 0) { orderType = ORDER_TYPE_BUY;  reqPrice = ask; }
+   else                               { orderType = ORDER_TYPE_SELL; reqPrice = bid; }
 
    PrintFormat("TRS Slave MT5: Placing %s sym=%s vol=%.2f ask=%.5f bid=%.5f sl=%.5f tp=%.5f",
                (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
-               po.symbol, vol, ask, bid, po.sl, po.tp);
+               sym, vol, ask, bid, g_pending[idx].sl, g_pending[idx].tp);
 
    ENUM_ORDER_TYPE_FILLING fills[3];
    fills[0] = ORDER_FILLING_IOC;
@@ -301,12 +301,12 @@ void ProcessPending(int idx) {
       MqlTradeRequest req = {};
       MqlTradeResult  res = {};
       req.action       = TRADE_ACTION_DEAL;
-      req.symbol       = po.symbol;
+      req.symbol       = sym;
       req.volume       = vol;
       req.type         = orderType;
       req.price        = reqPrice;
-      req.sl           = po.sl;
-      req.tp           = po.tp;
+      req.sl           = g_pending[idx].sl;
+      req.tp           = g_pending[idx].tp;
       req.magic        = MAGIC;
       req.comment      = "TRS";
       req.type_filling = fills[f];
@@ -314,8 +314,8 @@ void ProcessPending(int idx) {
       ResetLastError();
       if (OrderSend(req, res)) {
          PrintFormat("TRS Slave MT5: OK sym=%s vol=%.2f price=%.5f filling=%d order=%d deal=%d",
-                     po.symbol, vol, reqPrice, f, res.order, res.deal);
-         AddMap(po.masterTicket, res.order, po.sl, po.tp);
+                     sym, vol, reqPrice, f, res.order, res.deal);
+         AddMap(g_pending[idx].masterTicket, res.order, g_pending[idx].sl, g_pending[idx].tp);
          RemovePending(idx);
          return;
       }
