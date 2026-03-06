@@ -48,8 +48,8 @@ func (a *MatchTraderAdapter) Name() string {
 func (a *MatchTraderAdapter) stompSubscribeLoop() {
 	for {
 		if err := a.connectStomp(); err != nil {
-			log.Printf("matchtrade stomp connect error: %v — retrying in 3s", err)
-			time.Sleep(3 * time.Second)
+			log.Printf("matchtrade stomp connect error: %v — retrying in 60s", err)
+			time.Sleep(60 * time.Second)
 			continue
 		}
 		a.mu.Lock()

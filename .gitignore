@@ -1,0 +1,19 @@
+# Rust build artifacts
+target/
+**/*.d
+**/*.rlib
+**/*.rmeta
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Go
+relay/vendor/
+
+# Compiled EA binaries (source .mq4/.mq5 are tracked; .ex4/.ex5 are not)
+**/*.ex4
+**/*.ex5
+
+# Logs
+*.log

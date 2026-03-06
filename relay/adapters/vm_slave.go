@@ -13,19 +13,21 @@ import (
 )
 
 type VMSlaveAdapter struct {
-	AccountID   string
-	BrokerURL   string
-	EquityValue float64
+	AccountID    string
+	BrokerURL    string
+	EquityValue  float64
+	SymbolSuffix string // e.g. "m" for brokers that append a suffix to all symbols
 
 	mu     sync.RWMutex
 	client mqtt.Client
 }
 
-func NewVMSlaveAdapter(accountID, brokerURL string, equity float64) *VMSlaveAdapter {
+func NewVMSlaveAdapter(accountID, brokerURL string, equity float64, symbolSuffix string) *VMSlaveAdapter {
 	a := &VMSlaveAdapter{
-		AccountID:   accountID,
-		BrokerURL:   brokerURL,
-		EquityValue: equity,
+		AccountID:    accountID,
+		BrokerURL:    brokerURL,
+		EquityValue:  equity,
+		SymbolSuffix: symbolSuffix,
 	}
 	go a.connect()
 	return a
@@ -92,7 +94,8 @@ func (a *VMSlaveAdapter) PlaceOrder(p *engine.TradePayload, scaledLot float64, m
 	}
 
 	var sym [12]byte
-	copy(sym[:], []byte(mappedSymbol))
+	finalSymbol := mappedSymbol + a.SymbolSuffix
+	copy(sym[:], []byte(finalSymbol))
 
 	vp := VMTradePayload{
 		Ticket:    p.Ticket,
