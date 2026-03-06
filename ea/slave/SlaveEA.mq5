@@ -1,5 +1,5 @@
 #property copyright "TRS Slave EA MT5"
-#property version   "1.20"
+#property version   "1.30"
 
 #define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
@@ -46,8 +46,8 @@ void OnInit() {
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt5_" + ACCOUNT_ID);
    if (g_handle < 0) { Print("TRS Slave MT5: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT5: Subscribe failed"); ExpertRemove(); return; }
-   EventSetMillisecondTimer(1);
-   Print("TRS Slave MT5: ONLINE. Listening on: ", g_topic);
+   EventSetMillisecondTimer(50);
+   Print("TRS Slave MT5: ONLINE v1.30. Listening on: ", g_topic);
 }
 
 void OnDeinit(const int reason) {
@@ -63,12 +63,17 @@ void OnTimer() {
    VMTradePayload p;
    if (!UnpackPayload(buf, received, p)) return;
 
-   string sym = CharArrayToString(p.symbol, 0, -1, CP_ACP);
-   StringTrimRight(sym);
-   while (StringLen(sym) > 0 && StringGetCharacter(sym, StringLen(sym)-1) == 0)
-      sym = StringSubstr(sym, 0, StringLen(sym)-1);
+   // Extract symbol — stop at first null byte, not at array end
+   int symLen = 0;
+   while (symLen < 12 && p.symbol[symLen] != 0) symLen++;
+   string sym = CharArrayToString(p.symbol, 0, symLen, CP_ACP);
 
-   PrintFormat("TRS Slave MT5: Received ticket=%d sym=%s type=%d vol=%.2f sl=%.5f tp=%.5f",
+   if (StringLen(sym) == 0) {
+      Print("TRS Slave MT5: Empty symbol — skipping");
+      return;
+   }
+
+   PrintFormat("TRS Slave MT5: Recv ticket=%d sym='%s' type=%d vol=%.2f sl=%.5f tp=%.5f",
                p.ticket, sym, p.order_type, p.volume, p.sl, p.tp);
 
    // ── Existing position — modify SL/TP if changed ──────────────────────────
@@ -92,12 +97,12 @@ void OnTimer() {
       req.sl       = p.sl;
       req.tp       = p.tp;
 
+      ResetLastError();
       if (!OrderSend(req, res)) {
-         PrintFormat("TRS Slave MT5: Modify Error %d | deal=%d sl=%.5f tp=%.5f",
-                     GetLastError(), g_map[mapIdx].dealTicket, p.sl, p.tp);
+         PrintFormat("TRS Slave MT5: Modify Error=%d retcode=%d | deal=%d sl=%.5f tp=%.5f",
+                     GetLastError(), res.retcode, g_map[mapIdx].dealTicket, p.sl, p.tp);
       } else {
-         PrintFormat("TRS Slave MT5: Modified deal=%d sl=%.5f tp=%.5f",
-                     g_map[mapIdx].dealTicket, p.sl, p.tp);
+         PrintFormat("TRS Slave MT5: Modified deal=%d sl=%.5f tp=%.5f", g_map[mapIdx].dealTicket, p.sl, p.tp);
          g_map[mapIdx].sl = p.sl;
          g_map[mapIdx].tp = p.tp;
       }
@@ -106,21 +111,28 @@ void OnTimer() {
 
    // ── New trade ─────────────────────────────────────────────────────────────
    if (!SymbolSelect(sym, true)) {
-      PrintFormat("TRS Slave MT5: SymbolSelect failed for '%s'", sym);
+      PrintFormat("TRS Slave MT5: SymbolSelect failed for '%s' err=%d", sym, GetLastError());
       return;
    }
 
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   PrintFormat("TRS Slave MT5: Prices sym=%s ask=%.5f bid=%.5f", sym, ask, bid);
+   // Wait up to 500ms for price to populate after SymbolSelect
+   double ask = 0, bid = 0;
+   for (int attempt = 0; attempt < 10; attempt++) {
+      ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+      bid = SymbolInfoDouble(sym, SYMBOL_BID);
+      if (ask > 0 && bid > 0) break;
+      Sleep(50);
+   }
+
+   PrintFormat("TRS Slave MT5: Prices sym='%s' ask=%.5f bid=%.5f", sym, ask, bid);
 
    if (ask <= 0 || bid <= 0) {
-      PrintFormat("TRS Slave MT5: No valid price for '%s' — skipping", sym);
+      PrintFormat("TRS Slave MT5: No price for '%s' after 500ms — aborting", sym);
       return;
    }
 
    ENUM_ORDER_TYPE orderType;
-   double reqPrice;
+   double          reqPrice;
    if (p.order_type == 0) {
       orderType = ORDER_TYPE_BUY;
       reqPrice  = ask;
@@ -132,8 +144,24 @@ void OnTimer() {
       return;
    }
 
-   // Try filling modes in priority order: IOC -> FOK -> RETURN
-   ENUM_ORDER_TYPE_FILLING fillingModes[3] = {ORDER_FILLING_IOC, ORDER_FILLING_FOK, ORDER_FILLING_RETURN};
+   // Clamp volume to broker's min/max lot
+   double minLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double vol = p.volume;
+   if (minLot > 0 && vol < minLot) vol = minLot;
+   if (maxLot > 0 && vol > maxLot) vol = maxLot;
+   if (lotStep > 0) vol = MathRound(vol / lotStep) * lotStep;
+   vol = NormalizeDouble(vol, 2);
+
+   PrintFormat("TRS Slave MT5: Placing %s %s vol=%.2f (orig=%.2f) price=%.5f sl=%.5f tp=%.5f",
+               (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"), sym, vol, p.volume, reqPrice, p.sl, p.tp);
+
+   // Try filling modes: IOC → FOK → RETURN
+   ENUM_ORDER_TYPE_FILLING fills[3];
+   fills[0] = ORDER_FILLING_IOC;
+   fills[1] = ORDER_FILLING_FOK;
+   fills[2] = ORDER_FILLING_RETURN;
    bool sent = false;
 
    for (int f = 0; f < 3; f++) {
@@ -141,44 +169,42 @@ void OnTimer() {
       MqlTradeResult  res = {};
       req.action       = TRADE_ACTION_DEAL;
       req.symbol       = sym;
-      req.volume       = p.volume;
+      req.volume       = vol;
       req.type         = orderType;
       req.price        = reqPrice;
       req.sl           = p.sl;
       req.tp           = p.tp;
       req.magic        = MAGIC;
       req.comment      = "TRS";
-      req.type_filling = fillingModes[f];
+      req.type_filling = fills[f];
 
       ResetLastError();
       if (OrderSend(req, res)) {
-         PrintFormat("TRS Slave MT5: Sent sym=%s type=%d vol=%.2f price=%.5f filling=%d order=%d",
-                     sym, p.order_type, p.volume, reqPrice, f, res.order);
+         PrintFormat("TRS Slave MT5: OK sym=%s type=%d vol=%.2f price=%.5f filling=%d order=%d deal=%d",
+                     sym, p.order_type, vol, reqPrice, f, res.order, res.deal);
          AddMap(p.ticket, res.order, p.sl, p.tp);
          sent = true;
          break;
-      } else {
-         int err = GetLastError();
-         PrintFormat("TRS Slave MT5: OrderSend filling=%d Error=%d retcode=%d sym=%s",
-                     f, err, res.retcode, sym);
-         if (res.retcode != 10030) break; // 10030 = invalid fill — try next; other errors abort
       }
+
+      PrintFormat("TRS Slave MT5: OrderSend filling=%d failed: err=%d retcode=%d '%s'",
+                  f, GetLastError(), res.retcode, res.comment);
+
+      if (res.retcode != 10030) break; // 10030=invalid fill → try next; anything else bail out
    }
 
-   if (!sent) {
-      PrintFormat("TRS Slave MT5: All filling modes failed for sym=%s type=%d vol=%.2f",
-                  sym, p.order_type, p.volume);
-   }
+   if (!sent)
+      PrintFormat("TRS Slave MT5: All fills failed sym=%s vol=%.2f", sym, vol);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest&     req,
                         const MqlTradeResult&      res) {
    if (trans.type == TRADE_TRANSACTION_DEAL_ADD) {
-      PrintFormat("TRS Slave MT5: Fill confirmed deal=%d order=%d sym=%s vol=%.2f price=%.5f",
+      PrintFormat("TRS Slave MT5: Deal confirmed deal=%d order=%d sym=%s vol=%.2f price=%.5f",
                   trans.deal, trans.order, trans.symbol, trans.volume, trans.price);
       for (int i = 0; i < g_mapCount; i++) {
-         if (g_map[i].dealTicket == trans.order) {
+         if (g_map[i].dealTicket == (ulong)trans.order) {
             g_map[i].dealTicket = trans.deal;
             break;
          }

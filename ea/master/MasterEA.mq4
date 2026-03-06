@@ -57,7 +57,12 @@ void OnInit()
    }
 
    // Build filter array from inputs (skip -1 sentinels)
-   int inputs[5] = {Magic1, Magic2, Magic3, Magic4, Magic5};
+   int inputs[5];
+   inputs[0] = Magic1;
+   inputs[1] = Magic2;
+   inputs[2] = Magic3;
+   inputs[3] = Magic4;
+   inputs[4] = Magic5;
    g_filter_count = 0;
    ArrayResize(g_magic_filter, 0);
    for (int i = 0; i < 5; i++) {
