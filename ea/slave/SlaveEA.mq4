@@ -49,7 +49,7 @@ void OnInit() {
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt4_" + ACCOUNT_ID);
    if (g_handle < 0) { Print("TRS Slave MT4: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT4: Subscribe failed"); ExpertRemove(); return; }
-   EventSetMillisecondTimer(1);
+   EventSetMillisecondTimer(50);
    Print("TRS Slave MT4 online, topic=", g_topic);
 }
 
