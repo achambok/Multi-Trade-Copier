@@ -1,11 +1,14 @@
 #property copyright "TRS Slave EA MT5"
 #property version   "1.00"
+#property strict
 
-#define MQTT_HOST   "172.16.21.2"
+// Based on your telnet test, 172.16.21.1 is the Mac Host reachable from the VM
+#define MQTT_HOST   "172.16.21.1" 
 #define MQTT_PORT   1883
 #define ACCOUNT_ID  "vm_mt5"
 #define MAGIC       20240101
 
+// Import from your Rust DLL
 #import "MQTTClient.dll"
    int  MQTT_Connect(string host, int port, string clientId);
    int  MQTT_Subscribe(int handle, string topic);
@@ -13,48 +16,64 @@
    void MQTT_Disconnect(int handle);
 #import
 
-int    g_handle   = -1;
-string g_topic    = "trading/vm_slaves/" + ACCOUNT_ID;
+// Kernel32 import for safe memory copying (casting uchar[] to double)
+#import "kernel32.dll"
+   void RtlMoveMemory(double &dest, uchar &src[], int length);
+   void RtlMoveMemory(long &dest, uchar &src[], int length);
+   void RtlMoveMemory(int &dest, uchar &src[], int length);
+#import
+
+int    g_handle     = -1;
+string g_topic      = "trading/vm_slaves/" + ACCOUNT_ID;
 long   g_lastTicket = 0;
 
 struct VMTradePayload {
-   long   ticket;
-   uchar  symbol[12];
-   int    order_type;
-   double volume;
-   double price;
-   double sl;
-   double tp;
-   int    magic;
-   int    pad;
+   long   ticket;      // 8 bytes
+   uchar  symbol[12];  // 12 bytes
+   int    order_type;  // 4 bytes
+   double volume;      // 8 bytes
+   double price;       // 8 bytes
+   double sl;          // 8 bytes
+   double tp;          // 8 bytes
+   int    magic;       // 4 bytes
+   int    pad;         // 4 bytes (Alignment)
 };
 
-void OnInit()
+int OnInit()
 {
+   // Connect using the verified Host IP
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt5_" + ACCOUNT_ID);
+   
    if (g_handle < 0) {
-      Print("TRS Slave MT5: MQTT connect failed");
-      ExpertRemove();
-      return;
+      Print("TRS Slave MT5: MQTT connect failed to ", MQTT_HOST);
+      return(INIT_FAILED);
    }
+   
    if (MQTT_Subscribe(g_handle, g_topic) < 0) {
-      Print("TRS Slave MT5: subscribe failed");
-      ExpertRemove();
-      return;
+      Print("TRS Slave MT5: subscribe failed to ", g_topic);
+      MQTT_Disconnect(g_handle);
+      return(INIT_FAILED);
    }
-   EventSetMillisecondTimer(1);
-   Print("TRS Slave MT5 started, topic=", g_topic);
+   
+   // High frequency polling for low latency trade execution
+   EventSetMillisecondTimer(10); 
+   Print("TRS Slave MT5: ONLINE. Listening on: ", g_topic);
+   return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
    EventKillTimer();
    if (g_handle >= 0) MQTT_Disconnect(g_handle);
+   Print("TRS Slave MT5: Offline.");
 }
 
 void OnTimer()
 {
    uchar buf[128];
+   ArrayInitialize(buf, 0);
+   
+   // Poll the Rust DLL for new messages
    int received = MQTT_Receive(g_handle, buf, 128);
    if (received <= 0) return;
 
@@ -64,102 +83,69 @@ void OnTimer()
       return;
    }
 
+   // Idempotency check: don't process the same ticket twice
    if (p.ticket == g_lastTicket) return;
    g_lastTicket = p.ticket;
 
+   // Convert symbol uchar array to MQL string
    string sym = CharArrayToString(p.symbol, 0, -1, CP_ACP);
    StringTrimRight(sym);
 
-   ENUM_ORDER_TYPE orderType;
+   MqlTradeRequest request = {};
+   MqlTradeResult  result  = {};
+
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol       = sym;
+   request.volume       = p.volume;
+   request.magic        = MAGIC;
+   request.comment      = "TRS Slave";
+   request.type_filling = ORDER_FILLING_IOC;
+
+   // Map integer types to MQL5 enums
    switch (p.order_type) {
-      case 0: orderType = ORDER_TYPE_BUY;        break;
-      case 1: orderType = ORDER_TYPE_SELL;       break;
-      case 2: orderType = ORDER_TYPE_BUY_LIMIT;  break;
-      case 3: orderType = ORDER_TYPE_SELL_LIMIT; break;
-      case 4: orderType = ORDER_TYPE_BUY_STOP;   break;
-      case 5: orderType = ORDER_TYPE_SELL_STOP;  break;
+      case 0: request.type = ORDER_TYPE_BUY;  request.price = SymbolInfoDouble(sym, SYMBOL_ASK); break;
+      case 1: request.type = ORDER_TYPE_SELL; request.price = SymbolInfoDouble(sym, SYMBOL_BID); break;
       default:
-         PrintFormat("TRS Slave MT5: unknown order type %d", p.order_type);
+         Print("TRS Slave MT5: Unsupported order type ", p.order_type);
          return;
    }
 
-   double price = 0;
-   if (orderType == ORDER_TYPE_BUY)
-      price = SymbolInfoDouble(sym, SYMBOL_ASK);
-   else if (orderType == ORDER_TYPE_SELL)
-      price = SymbolInfoDouble(sym, SYMBOL_BID);
-   else
-      price = p.price;
-
-   MqlTradeRequest  request  = {};
-   MqlTradeResult   result   = {};
-
-   request.action    = TRADE_ACTION_DEAL;
-   request.symbol    = sym;
-   request.volume    = p.volume;
-   request.type      = orderType;
-   request.price     = price;
-   request.sl        = p.sl;
-   request.tp        = p.tp;
-   request.magic     = MAGIC;
-   request.comment   = "TRS";
-   request.type_filling = ORDER_FILLING_IOC;
+   request.sl = p.sl;
+   request.tp = p.tp;
 
    if (!OrderSendAsync(request, result)) {
-      PrintFormat("TRS Slave MT5: OrderSendAsync failed retcode=%d err=%d sym=%s",
-                  result.retcode, GetLastError(), sym);
+      PrintFormat("TRS Slave MT5: Order Error: %d", GetLastError());
    } else {
-      PrintFormat("TRS Slave MT5: async order sent order=%d sym=%s vol=%.2f",
-                  result.order, sym, p.volume);
+      PrintFormat("TRS Slave MT5: Executing Ticket %d | %s %0.2f", p.ticket, sym, p.volume);
    }
 }
 
-void OnTradeTransaction(const MqlTradeTransaction& trans,
-                        const MqlTradeRequest&     request,
-                        const MqlTradeResult&      result)
-{
-   if (trans.type == TRADE_TRANSACTION_DEAL_ADD) {
-      PrintFormat("TRS Slave MT5: fill confirmed deal=%d order=%d sym=%s vol=%.2f price=%.5f",
-                  trans.deal, trans.order, trans.symbol, trans.volume, trans.price);
-   }
-}
-
+// Fixed Unpacker using RtlMoveMemory for binary safety
 bool UnpackPayload(const uchar& buf[], int size, VMTradePayload& p)
 {
-   if (size < 64) return false;
+   if (size < 60) return false; // Minimum size for the struct fields
+   
    int offset = 0;
+   uchar tmp8[8];
+   uchar tmp4[4];
 
-   p.ticket = 0;
-   for (int i = 0; i < 8; i++)
-      p.ticket |= ((long)buf[offset + i]) << (i * 8);
-   offset += 8;
-
-   for (int i = 0; i < 12; i++)
-      p.symbol[i] = buf[offset + i];
-   offset += 12;
-
-   p.order_type = 0;
-   for (int i = 0; i < 4; i++)
-      p.order_type |= ((int)buf[offset + i]) << (i * 8);
-   offset += 4;
-
-   p.volume = ReadDouble(buf, offset); offset += 8;
-   p.price  = ReadDouble(buf, offset); offset += 8;
-   p.sl     = ReadDouble(buf, offset); offset += 8;
-   p.tp     = ReadDouble(buf, offset); offset += 8;
-
-   p.magic = 0;
-   for (int i = 0; i < 4; i++)
-      p.magic |= ((int)buf[offset + i]) << (i * 8);
-
+   // Ticket (Long)
+   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.ticket, tmp8, 8); offset += 8;
+   
+   // Symbol (Fixed 12 bytes)
+   for(int i=0; i<12; i++) p.symbol[i] = buf[offset+i]; offset += 12;
+   
+   // Order Type (Int)
+   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.order_type, tmp4, 4); offset += 4;
+   
+   // Doubles (Volume, Price, SL, TP)
+   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.volume, tmp8, 8); offset += 8;
+   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.price, tmp8, 8);  offset += 8;
+   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.sl, tmp8, 8);     offset += 8;
+   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.tp, tmp8, 8);     offset += 8;
+   
+   // Magic (Int)
+   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.magic, tmp4, 4);
+   
    return true;
-}
-
-double ReadDouble(const uchar& buf[], int offset)
-{
-   uchar raw[8];
-   for (int i = 0; i < 8; i++) raw[i] = buf[offset + i];
-   double result;
-   RtlMoveMemory(result, raw[0], 8);
-   return result;
 }
