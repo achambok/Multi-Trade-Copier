@@ -185,6 +185,9 @@ void UpdateSnapshot(long ticket, int otype, double volume, double price,
    g_snapshot_count++;
 }
 
+// order_type sentinel used for close signals (above all MT4 OP_ values 0-5)
+#define OP_CLOSE 10
+
 void PruneClosedTickets()
 {
    int total = OrdersTotal();
@@ -195,6 +198,24 @@ void PruneClosedTickets()
          if (OrderTicket() == g_snapshot[s].ticket) { found = true; break; }
       }
       if (!found) {
+         // Publish close signal before removing from snapshot
+         TradeState &ts = g_snapshot[s];
+         uchar sym_arr[12];
+         ArrayInitialize(sym_arr, 0);
+         string sym = "";
+         // Recover symbol via history
+         if (OrderSelect((int)ts.ticket, SELECT_BY_TICKET, MODE_HISTORY))
+            sym = OrderSymbol();
+         StringToCharArray(sym, sym_arr, 0, MathMin(StringLen(sym), 11));
+
+         int res = send_trade_event(ts.ticket, sym_arr, OP_CLOSE,
+                                    ts.volume, ts.price, 0, 0, ts.magic, 0);
+         if (res == 0)
+            PrintFormat("TRS: [%s] CLOSE published ticket=%d sym=%s",
+                        SourceLabel(ts.magic), ts.ticket, sym);
+         else
+            PrintFormat("TRS: CLOSE publish error %d ticket=%d", res, ts.ticket);
+
          for (int j = s; j < g_snapshot_count - 1; j++)
             g_snapshot[j] = g_snapshot[j + 1];
          g_snapshot_count--;

@@ -73,12 +73,33 @@ void OnTimer() {
    int mapIdx = FindMap(p.ticket);
 
    if (mapIdx >= 0) {
-      // Known ticket — check if SL/TP changed and modify
+      int slaveTkt = g_map[mapIdx].slaveTicket;
+
+      // ── Close signal ──────────────────────────────────────────────────────
+      if (p.order_type == 10) {
+         if (!OrderSelect(slaveTkt, SELECT_BY_TICKET)) {
+            PrintFormat("TRS Slave MT4: Close — OrderSelect failed ticket=%d err=%d", slaveTkt, GetLastError());
+            return;
+         }
+         double closePrice = (OrderType() == OP_BUY)
+                             ? MarketInfo(OrderSymbol(), MODE_BID)
+                             : MarketInfo(OrderSymbol(), MODE_ASK);
+         if (!OrderClose(slaveTkt, OrderLots(), closePrice, 3, clrNONE))
+            PrintFormat("TRS Slave MT4: OrderClose Error %d | ticket=%d", GetLastError(), slaveTkt);
+         else
+            PrintFormat("TRS Slave MT4: Closed ticket=%d sym=%s", slaveTkt, OrderSymbol());
+         // Remove from map
+         for (int j = mapIdx; j < g_mapCount - 1; j++) g_map[j] = g_map[j + 1];
+         g_mapCount--;
+         ArrayResize(g_map, g_mapCount);
+         return;
+      }
+
+      // ── SL/TP modify ──────────────────────────────────────────────────────
       bool slChanged = MathAbs(g_map[mapIdx].sl - p.sl) > 0.000001;
       bool tpChanged = MathAbs(g_map[mapIdx].tp - p.tp) > 0.000001;
-      if (!slChanged && !tpChanged) return; // nothing changed
+      if (!slChanged && !tpChanged) return;
 
-      int slaveTkt = g_map[mapIdx].slaveTicket;
       if (!OrderSelect(slaveTkt, SELECT_BY_TICKET)) {
          PrintFormat("TRS Slave MT4: Modify — OrderSelect failed ticket=%d err=%d", slaveTkt, GetLastError());
          return;
@@ -92,6 +113,12 @@ void OnTimer() {
          g_map[mapIdx].sl = p.sl;
          g_map[mapIdx].tp = p.tp;
       }
+      return;
+   }
+
+   // ── Close signal with no mapping (already closed or never opened) ─────────
+   if (p.order_type == 10) {
+      PrintFormat("TRS Slave MT4: CLOSE signal ticket=%d — no local mapping, ignoring", p.ticket);
       return;
    }
 
