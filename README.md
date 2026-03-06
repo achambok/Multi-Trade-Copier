@@ -432,6 +432,39 @@ Typical observed latencies on Mac Mini M4:
 
 ---
 
+## Single Chart Slave Setup
+
+The slave EA does **not** need to run on the same chart as the traded pair. It subscribes to an MQTT topic and handles **any symbol** that comes through. When a trade arrives for `EURUSDm`, `AUDCADm`, or `XAUUSDm`, the EA calls `SymbolSelect(sym, true)` which adds that symbol to Market Watch dynamically — regardless of which chart the EA is attached to.
+
+**Recommended setup:**
+- **Master** — 3 charts (`EURUSD`, `AUDCAD`, `XAUUSD`) each with their respective source EA (THERANTO V3, Gold Scalping, etc.)
+- **MT4 Slave** — 1 chart, any symbol — handles all pairs automatically
+- **MT5 Slave** — 1 chart, any symbol — handles all pairs automatically
+
+> The only reason to run on multiple charts is redundancy in case one EA instance crashes. For normal operation, one instance per terminal is sufficient.
+
+---
+
+## Performance Recommendation
+
+For best latency and execution quality, deploy this solution on a **VPS (Virtual Private Server)** located close to your brokers' execution servers and ECN/dealing desks.
+
+Running on a local Mac Mini introduces variable latency from your home ISP. A cloud VPS co-located near the broker's data centre (e.g., LD4 London, NY4 New York, TY3 Tokyo) can reduce round-trip latency from 40–120ms down to 1–5ms for API-based slaves.
+
+**Recommended providers:** AWS, Vultr, Contabo, ForexVPS — choose a region matching your broker's server location.
+
+---
+
 ## License
 
 MIT
+
+---
+
+## Author
+
+**Ashley Chamboko** ([@achambok](https://github.com/achambok)) — *2026-03-06*
+
+If this project helped you, consider buying me a coffee ☕
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-achambok-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://github.com/achambok)
