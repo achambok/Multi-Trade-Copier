@@ -11,7 +11,9 @@
       "account_id": "REPLACE_ACCOUNT_ID",
       "email":      "REPLACE_EMAIL",
       "password":   "REPLACE_PASSWORD",
-      "server_id":  "REPLACE_SERVER_ID"
+      "server_id":  "REPLACE_SERVER_ID",
+      "risk_mode":  "proportional",
+      "risk_value": 0
     },
     {
       "id":         "mt_acc1",
@@ -19,7 +21,9 @@
       "base_url":   "https://broker.matchtrade.com/api",
       "account_id": "REPLACE_ACCOUNT_ID",
       "api_key":    "REPLACE_API_KEY",
-      "stomp_addr": "broker.matchtrade.com:61613"
+      "stomp_addr": "broker.matchtrade.com:61613",
+      "risk_mode":  "proportional",
+      "risk_value": 0
     },
     {
       "id":           "tv_acc1",
@@ -31,19 +35,26 @@
       "password":     "REPLACE_PASSWORD",
       "device_id":    "REPLACE_DEVICE_UUID",
       "app_id":       "Sample App",
-      "app_version":  "1.0"
+      "app_version":  "1.0",
+      "risk_mode":    "proportional",
+      "risk_value":   0
     },
     {
-      "id":         "vm_mt4",
-      "type":       "vm_slave",
-      "account_id": "vm_mt4",
-      "equity":     5000
+      "id":           "vm_mt4",
+      "type":         "vm_slave",
+      "account_id":   "vm_mt4",
+      "equity":       5000,
+      "risk_mode":    "proportional",
+      "risk_value":   0
     },
     {
-      "id":         "vm_mt5",
-      "type":       "vm_slave",
-      "account_id": "vm_mt5",
-      "equity":     5000
+      "id":           "vm_mt5",
+      "type":         "vm_slave",
+      "account_id":   "vm_mt5",
+      "symbol_suffix": "m",
+      "equity":       5000,
+      "risk_mode":    "proportional",
+      "risk_value":   0
     }
   ]
 }

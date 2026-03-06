@@ -17,20 +17,26 @@ import (
 )
 
 type SlaveConfig struct {
-	ID         string  `json:"id"`
-	Type       string  `json:"type"`
-	BaseURL    string  `json:"base_url"`
-	AccountID  string  `json:"account_id"`
-	Email      string  `json:"email"`
-	Password   string  `json:"password"`
-	ServerID   string  `json:"server_id"`
-	APIKey     string  `json:"api_key"`
-	STOMPAddr  string  `json:"stomp_addr"`
-	Username   string  `json:"username"`
-	DeviceID   string  `json:"device_id"`
-	AppID      string  `json:"app_id"`
-	AppVersion string  `json:"app_version"`
-	Equity     float64 `json:"equity"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	BaseURL      string  `json:"base_url"`
+	AccountID    string  `json:"account_id"`
+	Email        string  `json:"email"`
+	Password     string  `json:"password"`
+	ServerID     string  `json:"server_id"`
+	APIKey       string  `json:"api_key"`
+	STOMPAddr    string  `json:"stomp_addr"`
+	Username     string  `json:"username"`
+	DeviceID     string  `json:"device_id"`
+	AppID        string  `json:"app_id"`
+	AppVersion   string  `json:"app_version"`
+	SymbolSuffix string  `json:"symbol_suffix"`
+	Equity       float64 `json:"equity"`
+	// Risk engine fields
+	// risk_mode: "proportional" | "percent" | "fixed_lot" | "fixed_dollars"
+	// risk_value: lot size, percentage, or dollar amount depending on mode
+	RiskMode  string  `json:"risk_mode"`
+	RiskValue float64 `json:"risk_value"`
 }
 
 type RelayConfig struct {
@@ -42,9 +48,10 @@ type RelayConfig struct {
 }
 
 type Relay struct {
-	cfg       RelayConfig
-	symbolMap map[string]map[string]string
-	slaves    []adapters.SlaveAdapter
+	cfg        RelayConfig
+	symbolMap  map[string]map[string]string
+	slaves     []adapters.SlaveAdapter
+	slaveCfgs  []SlaveConfig
 	mqttClient mqtt.Client
 }
 
@@ -94,7 +101,7 @@ func buildSlaves(cfgs []SlaveConfig, mqttBroker string) []adapters.SlaveAdapter 
 			))
 		case "vm_slave":
 			slaves = append(slaves, adapters.NewVMSlaveAdapter(
-				sc.AccountID, mqttBroker, sc.Equity,
+				sc.AccountID, mqttBroker, sc.Equity, sc.SymbolSuffix,
 			))
 		default:
 			log.Printf("unknown slave type: %s (id=%s) — skipped", sc.Type, sc.ID)
@@ -118,9 +125,9 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 		engine.OrderTypeName(payload.OrderType), payload.Volume, payload.Price)
 
 	var wg sync.WaitGroup
-	for _, slave := range r.slaves {
+	for i, slave := range r.slaves {
 		wg.Add(1)
-		go func(s adapters.SlaveAdapter) {
+		go func(s adapters.SlaveAdapter, sc SlaveConfig) {
 			defer wg.Done()
 			start := time.Now()
 
@@ -130,7 +137,7 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 				equity = r.cfg.MasterEquity
 			}
 
-			scaledLot := engine.ScaleLot(payload.Volume, r.cfg.MasterEquity, equity)
+			scaledLot := engine.ComputeLot(payload.Volume, r.cfg.MasterEquity, equity, sc.RiskMode, sc.RiskValue)
 
 			adapterType := slaveAdapterType(s)
 			mappedSymbol := mapSymbol(r.symbolMap, masterSymbol, adapterType)
@@ -142,9 +149,9 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 
 			elapsed := time.Since(start)
 			totalElapsed := time.Since(recvAt)
-			log.Printf("[%s] OK ticket=%d sym=%s lot=%.2f elapsed=%s total=%s",
-				s.Name(), payload.Ticket, mappedSymbol, scaledLot, elapsed, totalElapsed)
-		}(slave)
+			log.Printf("[%s] OK ticket=%d sym=%s lot=%.2f mode=%s elapsed=%s total=%s",
+				s.Name(), payload.Ticket, mappedSymbol, scaledLot, sc.RiskMode, elapsed, totalElapsed)
+		}(slave, r.slaveCfgs[i])
 	}
 	wg.Wait()
 }
@@ -189,6 +196,7 @@ func main() {
 		cfg:       cfg,
 		symbolMap: symMap,
 		slaves:    slaves,
+		slaveCfgs: cfg.Slaves,
 	}
 
 	opts := mqtt.NewClientOptions().

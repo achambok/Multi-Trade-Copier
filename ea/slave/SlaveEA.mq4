@@ -1,9 +1,8 @@
 #property strict
 #property copyright "TRS Slave EA MT4"
-#property version   "1.00"
+#property version   "1.10"
 
-// Use .1 based on your successful telnet test
-#define MQTT_HOST   "172.16.21.1" 
+#define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
 #define ACCOUNT_ID  "vm_mt4"
 #define MAGIC       20240101
@@ -15,129 +14,160 @@
    void MQTT_Disconnect(int handle);
 #import
 
-// Required for safe binary unpacking of doubles/longs
 #import "kernel32.dll"
-   void RtlMoveMemory(double &dest, uchar &src[], int length);
-   void RtlMoveMemory(long &dest, uchar &src[], int length);
-   void RtlMoveMemory(int &dest, uchar &src[], int length);
+   void RtlMoveMemory(double& dest, const uchar& src[], int count);
+   void RtlMoveMemory(long&   dest, const uchar& src[], int count);
 #import
 
-int      g_handle   = -1;
-string   g_topic    = "trading/vm_slaves/" + ACCOUNT_ID;
-long     g_lastTicket = 0;
+int    g_handle = -1;
+string g_topic  = "trading/vm_slaves/" + ACCOUNT_ID;
 
-// Struct must match your Rust memory layout exactly
+// ── Master→Slave ticket map ───────────────────────────────────────────────────
+struct TicketMap {
+   long   masterTicket;
+   int    slaveTicket;
+   double sl;
+   double tp;
+};
+TicketMap g_map[];
+int       g_mapCount = 0;
+
+// ── Payload struct (matches Go relay binary.LittleEndian layout) ──────────────
 struct VMTradePayload {
-   long   ticket;      // 8 bytes
-   uchar  symbol[12];  // 12 bytes
-   int    order_type;  // 4 bytes
-   double volume;      // 8 bytes
-   double price;       // 8 bytes
-   double sl;          // 8 bytes
-   double tp;          // 8 bytes
-   int    magic;       // 4 bytes
-   int    pad;         // 4 bytes (for 8-byte alignment)
+   long   ticket;
+   uchar  symbol[12];
+   int    order_type;
+   double volume;
+   double price;
+   double sl;
+   double tp;
+   int    magic;
+   int    pad;
 };
 
-int OnInit()
-{
+void OnInit() {
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt4_" + ACCOUNT_ID);
-   if (g_handle < 0) {
-      Print("TRS Slave: MQTT connect failed to ", MQTT_HOST);
-      return(INIT_FAILED);
-   }
-   
-   if (MQTT_Subscribe(g_handle, g_topic) < 0) {
-      Print("TRS Slave: subscribe failed for ", g_topic);
-      MQTT_Disconnect(g_handle);
-      return(INIT_FAILED);
-   }
-   
-   // 10ms is usually the sweet spot for MT4 timer stability
-   EventSetMillisecondTimer(10);
+   if (g_handle < 0) { Print("TRS Slave MT4: MQTT connect failed"); ExpertRemove(); return; }
+   if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT4: Subscribe failed"); ExpertRemove(); return; }
+   EventSetMillisecondTimer(1);
    Print("TRS Slave MT4 online, topic=", g_topic);
-   return(INIT_SUCCEEDED);
 }
 
-void OnDeinit(const int reason)
-{
+void OnDeinit(const int reason) {
    EventKillTimer();
    if (g_handle >= 0) MQTT_Disconnect(g_handle);
 }
 
-void OnTimer()
-{
+void OnTimer() {
    uchar buf[128];
-   ArrayInitialize(buf, 0);
-   
    int received = MQTT_Receive(g_handle, buf, 128);
-   if (received <= 0) return;
+   if (received < 64) return;
 
    VMTradePayload p;
-   if (!UnpackPayload(buf, received, p)) {
-      Print("TRS Slave: unpack failed, bytes=", received);
-      return;
-   }
-
-   // Idempotency: skip if already processed
-   if (p.ticket == g_lastTicket) return;
-   g_lastTicket = p.ticket;
+   if (!UnpackPayload(buf, received, p)) return;
 
    string sym = CharArrayToString(p.symbol, 0, -1, CP_ACP);
    StringTrimRight(sym);
 
-   int    cmd      = p.order_type;
-   double lots     = p.volume;
-   double sl       = p.sl;
-   double tp       = p.tp;
-   int    slippage = 3;
-   double price    = 0;
+   // ── Find existing slave ticket for this master ticket ─────────────────────
+   int mapIdx = FindMap(p.ticket);
 
-   // Handle Market vs Pending price logic
-   if (cmd == OP_BUY) {
-      price = MarketInfo(sym, MODE_ASK);
-   } else if (cmd == OP_SELL) {
-      price = MarketInfo(sym, MODE_BID);
-   } else {
-      price = p.price;
-   }
+   if (mapIdx >= 0) {
+      // Known ticket — check if SL/TP changed and modify
+      bool slChanged = MathAbs(g_map[mapIdx].sl - p.sl) > 0.000001;
+      bool tpChanged = MathAbs(g_map[mapIdx].tp - p.tp) > 0.000001;
+      if (!slChanged && !tpChanged) return; // nothing changed
 
-   if (price <= 0) {
-      Print("TRS Slave: Invalid price for ", sym);
+      int slaveTkt = g_map[mapIdx].slaveTicket;
+      if (!OrderSelect(slaveTkt, SELECT_BY_TICKET)) {
+         PrintFormat("TRS Slave MT4: Modify — OrderSelect failed ticket=%d err=%d", slaveTkt, GetLastError());
+         return;
+      }
+      double newPrice = OrderOpenPrice();
+      if (!OrderModify(slaveTkt, newPrice, p.sl, p.tp, 0, clrNONE)) {
+         PrintFormat("TRS Slave MT4: OrderModify Error %d | ticket=%d sl=%.5f tp=%.5f",
+                     GetLastError(), slaveTkt, p.sl, p.tp);
+      } else {
+         PrintFormat("TRS Slave MT4: Modified ticket=%d sl=%.5f tp=%.5f", slaveTkt, p.sl, p.tp);
+         g_map[mapIdx].sl = p.sl;
+         g_map[mapIdx].tp = p.tp;
+      }
       return;
    }
 
-   int ticket = OrderSend(sym, cmd, lots, price, slippage, sl, tp, "TRS", MAGIC, 0, clrNONE);
+   // ── New ticket — open order ───────────────────────────────────────────────
+   if (!SymbolSelect(sym, true)) {
+      PrintFormat("TRS Slave MT4: SymbolSelect failed for '%s'", sym);
+      return;
+   }
+   RefreshRates();
+
+   double price = 0;
+   if      (p.order_type == OP_BUY)  price = MarketInfo(sym, MODE_ASK);
+   else if (p.order_type == OP_SELL) price = MarketInfo(sym, MODE_BID);
+   else                               price = p.price;
+
+   if (price <= 0) { PrintFormat("TRS Slave MT4: No price for '%s'", sym); return; }
+
+   int ticket = OrderSend(sym, p.order_type, p.volume, price, 3, p.sl, p.tp, "TRS", MAGIC, 0, clrNONE);
    if (ticket < 0) {
-      PrintFormat("TRS Slave: OrderSend Error %d | sym=%s cmd=%d", GetLastError(), sym, cmd);
+      PrintFormat("TRS Slave MT4: OrderSend Error %d | sym=%s cmd=%d lots=%.2f",
+                  GetLastError(), sym, p.order_type, p.volume);
    } else {
-      PrintFormat("TRS Slave: Success! Ticket=%d sym=%s vol=%.2f", ticket, sym, lots);
+      PrintFormat("TRS Slave MT4: Filled ticket=%d sym=%s cmd=%d lots=%.2f price=%.5f",
+                  ticket, sym, p.order_type, p.volume, price);
+      AddMap(p.ticket, ticket, p.sl, p.tp);
    }
 }
 
-bool UnpackPayload(const uchar& buf[], int size, VMTradePayload& p)
-{
-   if (size < 60) return false;
-   int offset = 0;
-   uchar tmp8[8], tmp4[4];
+// ── Ticket map helpers ────────────────────────────────────────────────────────
 
-   // Ticket
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.ticket, tmp8, 8); offset += 8;
+int FindMap(long masterTkt) {
+   for (int i = 0; i < g_mapCount; i++)
+      if (g_map[i].masterTicket == masterTkt) return i;
+   return -1;
+}
 
-   // Symbol
-   for(int i=0; i<12; i++) p.symbol[i] = buf[offset+i]; offset += 12;
+void AddMap(long masterTkt, int slaveTkt, double sl, double tp) {
+   ArrayResize(g_map, g_mapCount + 1);
+   g_map[g_mapCount].masterTicket = masterTkt;
+   g_map[g_mapCount].slaveTicket  = slaveTkt;
+   g_map[g_mapCount].sl           = sl;
+   g_map[g_mapCount].tp           = tp;
+   g_mapCount++;
+}
 
-   // Order Type
-   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.order_type, tmp4, 4); offset += 4;
+// ── Payload deserialization ───────────────────────────────────────────────────
 
-   // Doubles
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.volume, tmp8, 8); offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.price, tmp8, 8);  offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.sl, tmp8, 8);     offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.tp, tmp8, 8);     offset += 8;
+bool UnpackPayload(const uchar& buf[], int size, VMTradePayload& p) {
+   if (size < 64) return false;
+   uchar tmp8[8];
 
-   // Magic
-   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.magic, tmp4, 4);
+   // ticket (int64, 8 bytes)
+   ArrayCopy(tmp8, buf, 0, 0, 8);
+   RtlMoveMemory(p.ticket, tmp8, 8);
 
+   // symbol (12 bytes)
+   for (int i = 0; i < 12; i++) p.symbol[i] = buf[8 + i];
+
+   // order_type (int32 LE, 4 bytes)
+   p.order_type = (int)buf[20] | ((int)buf[21] << 8) | ((int)buf[22] << 16) | ((int)buf[23] << 24);
+
+   // doubles: volume, price, sl, tp
+   p.volume = ReadDouble(buf, 24);
+   p.price  = ReadDouble(buf, 32);
+   p.sl     = ReadDouble(buf, 40);
+   p.tp     = ReadDouble(buf, 48);
+
+   // magic (int32 LE)
+   p.magic = (int)buf[56] | ((int)buf[57] << 8) | ((int)buf[58] << 16) | ((int)buf[59] << 24);
    return true;
+}
+
+double ReadDouble(const uchar& buf[], int offset) {
+   uchar tmp[8];
+   ArrayCopy(tmp, buf, 0, offset, 8);
+   double result;
+   RtlMoveMemory(result, tmp, 8);
+   return result;
 }

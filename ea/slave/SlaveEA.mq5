@@ -1,14 +1,11 @@
 #property copyright "TRS Slave EA MT5"
-#property version   "1.00"
-#property strict
+#property version   "1.20"
 
-// Based on your telnet test, 172.16.21.1 is the Mac Host reachable from the VM
-#define MQTT_HOST   "172.16.21.1" 
+#define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
 #define ACCOUNT_ID  "vm_mt5"
 #define MAGIC       20240101
 
-// Import from your Rust DLL
 #import "MQTTClient.dll"
    int  MQTT_Connect(string host, int port, string clientId);
    int  MQTT_Subscribe(int handle, string topic);
@@ -16,136 +13,222 @@
    void MQTT_Disconnect(int handle);
 #import
 
-// Kernel32 import for safe memory copying (casting uchar[] to double)
 #import "kernel32.dll"
-   void RtlMoveMemory(double &dest, uchar &src[], int length);
-   void RtlMoveMemory(long &dest, uchar &src[], int length);
-   void RtlMoveMemory(int &dest, uchar &src[], int length);
+   void RtlMoveMemory(double& dest, const uchar& src[], int count);
+   void RtlMoveMemory(long&   dest, const uchar& src[], int count);
 #import
 
-int    g_handle     = -1;
-string g_topic      = "trading/vm_slaves/" + ACCOUNT_ID;
-long   g_lastTicket = 0;
+int    g_handle = -1;
+string g_topic  = "trading/vm_slaves/" + ACCOUNT_ID;
+
+struct TicketMap {
+   long   masterTicket;
+   ulong  dealTicket;
+   double sl;
+   double tp;
+};
+TicketMap g_map[];
+int       g_mapCount = 0;
 
 struct VMTradePayload {
-   long   ticket;      // 8 bytes
-   uchar  symbol[12];  // 12 bytes
-   int    order_type;  // 4 bytes
-   double volume;      // 8 bytes
-   double price;       // 8 bytes
-   double sl;          // 8 bytes
-   double tp;          // 8 bytes
-   int    magic;       // 4 bytes
-   int    pad;         // 4 bytes (Alignment)
+   long   ticket;
+   uchar  symbol[12];
+   int    order_type;
+   double volume;
+   double price;
+   double sl;
+   double tp;
+   int    magic;
+   int    pad;
 };
 
-int OnInit()
-{
-   // Connect using the verified Host IP
+void OnInit() {
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt5_" + ACCOUNT_ID);
-   
-   if (g_handle < 0) {
-      Print("TRS Slave MT5: MQTT connect failed to ", MQTT_HOST);
-      return(INIT_FAILED);
-   }
-   
-   if (MQTT_Subscribe(g_handle, g_topic) < 0) {
-      Print("TRS Slave MT5: subscribe failed to ", g_topic);
-      MQTT_Disconnect(g_handle);
-      return(INIT_FAILED);
-   }
-   
-   // High frequency polling for low latency trade execution
-   EventSetMillisecondTimer(10); 
+   if (g_handle < 0) { Print("TRS Slave MT5: MQTT connect failed"); ExpertRemove(); return; }
+   if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT5: Subscribe failed"); ExpertRemove(); return; }
+   EventSetMillisecondTimer(1);
    Print("TRS Slave MT5: ONLINE. Listening on: ", g_topic);
-   return(INIT_SUCCEEDED);
 }
 
-void OnDeinit(const int reason)
-{
+void OnDeinit(const int reason) {
    EventKillTimer();
    if (g_handle >= 0) MQTT_Disconnect(g_handle);
-   Print("TRS Slave MT5: Offline.");
 }
 
-void OnTimer()
-{
+void OnTimer() {
    uchar buf[128];
-   ArrayInitialize(buf, 0);
-   
-   // Poll the Rust DLL for new messages
    int received = MQTT_Receive(g_handle, buf, 128);
-   if (received <= 0) return;
+   if (received < 64) return;
 
    VMTradePayload p;
-   if (!UnpackPayload(buf, received, p)) {
-      Print("TRS Slave MT5: unpack failed, bytes=", received);
+   if (!UnpackPayload(buf, received, p)) return;
+
+   string sym = CharArrayToString(p.symbol, 0, -1, CP_ACP);
+   StringTrimRight(sym);
+   while (StringLen(sym) > 0 && StringGetCharacter(sym, StringLen(sym)-1) == 0)
+      sym = StringSubstr(sym, 0, StringLen(sym)-1);
+
+   PrintFormat("TRS Slave MT5: Received ticket=%d sym=%s type=%d vol=%.2f sl=%.5f tp=%.5f",
+               p.ticket, sym, p.order_type, p.volume, p.sl, p.tp);
+
+   // ── Existing position — modify SL/TP if changed ──────────────────────────
+   int mapIdx = FindMap(p.ticket);
+   if (mapIdx >= 0) {
+      bool slChanged = MathAbs(g_map[mapIdx].sl - p.sl) > 0.000001;
+      bool tpChanged = MathAbs(g_map[mapIdx].tp - p.tp) > 0.000001;
+      if (!slChanged && !tpChanged) return;
+
+      if (!PositionSelectByTicket(g_map[mapIdx].dealTicket)) {
+         PrintFormat("TRS Slave MT5: PositionSelectByTicket failed deal=%d err=%d",
+                     g_map[mapIdx].dealTicket, GetLastError());
+         return;
+      }
+
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action   = TRADE_ACTION_SLTP;
+      req.symbol   = PositionGetString(POSITION_SYMBOL);
+      req.position = g_map[mapIdx].dealTicket;
+      req.sl       = p.sl;
+      req.tp       = p.tp;
+
+      if (!OrderSend(req, res)) {
+         PrintFormat("TRS Slave MT5: Modify Error %d | deal=%d sl=%.5f tp=%.5f",
+                     GetLastError(), g_map[mapIdx].dealTicket, p.sl, p.tp);
+      } else {
+         PrintFormat("TRS Slave MT5: Modified deal=%d sl=%.5f tp=%.5f",
+                     g_map[mapIdx].dealTicket, p.sl, p.tp);
+         g_map[mapIdx].sl = p.sl;
+         g_map[mapIdx].tp = p.tp;
+      }
       return;
    }
 
-   // Idempotency check: don't process the same ticket twice
-   if (p.ticket == g_lastTicket) return;
-   g_lastTicket = p.ticket;
-
-   // Convert symbol uchar array to MQL string
-   string sym = CharArrayToString(p.symbol, 0, -1, CP_ACP);
-   StringTrimRight(sym);
-
-   MqlTradeRequest request = {};
-   MqlTradeResult  result  = {};
-
-   request.action       = TRADE_ACTION_DEAL;
-   request.symbol       = sym;
-   request.volume       = p.volume;
-   request.magic        = MAGIC;
-   request.comment      = "TRS Slave";
-   request.type_filling = ORDER_FILLING_IOC;
-
-   // Map integer types to MQL5 enums
-   switch (p.order_type) {
-      case 0: request.type = ORDER_TYPE_BUY;  request.price = SymbolInfoDouble(sym, SYMBOL_ASK); break;
-      case 1: request.type = ORDER_TYPE_SELL; request.price = SymbolInfoDouble(sym, SYMBOL_BID); break;
-      default:
-         Print("TRS Slave MT5: Unsupported order type ", p.order_type);
-         return;
+   // ── New trade ─────────────────────────────────────────────────────────────
+   if (!SymbolSelect(sym, true)) {
+      PrintFormat("TRS Slave MT5: SymbolSelect failed for '%s'", sym);
+      return;
    }
 
-   request.sl = p.sl;
-   request.tp = p.tp;
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   PrintFormat("TRS Slave MT5: Prices sym=%s ask=%.5f bid=%.5f", sym, ask, bid);
 
-   if (!OrderSendAsync(request, result)) {
-      PrintFormat("TRS Slave MT5: Order Error: %d", GetLastError());
+   if (ask <= 0 || bid <= 0) {
+      PrintFormat("TRS Slave MT5: No valid price for '%s' — skipping", sym);
+      return;
+   }
+
+   ENUM_ORDER_TYPE orderType;
+   double reqPrice;
+   if (p.order_type == 0) {
+      orderType = ORDER_TYPE_BUY;
+      reqPrice  = ask;
+   } else if (p.order_type == 1) {
+      orderType = ORDER_TYPE_SELL;
+      reqPrice  = bid;
    } else {
-      PrintFormat("TRS Slave MT5: Executing Ticket %d | %s %0.2f", p.ticket, sym, p.volume);
+      PrintFormat("TRS Slave MT5: Unsupported order type %d", p.order_type);
+      return;
+   }
+
+   // Try filling modes in priority order: IOC -> FOK -> RETURN
+   ENUM_ORDER_TYPE_FILLING fillingModes[3] = {ORDER_FILLING_IOC, ORDER_FILLING_FOK, ORDER_FILLING_RETURN};
+   bool sent = false;
+
+   for (int f = 0; f < 3; f++) {
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action       = TRADE_ACTION_DEAL;
+      req.symbol       = sym;
+      req.volume       = p.volume;
+      req.type         = orderType;
+      req.price        = reqPrice;
+      req.sl           = p.sl;
+      req.tp           = p.tp;
+      req.magic        = MAGIC;
+      req.comment      = "TRS";
+      req.type_filling = fillingModes[f];
+
+      ResetLastError();
+      if (OrderSend(req, res)) {
+         PrintFormat("TRS Slave MT5: Sent sym=%s type=%d vol=%.2f price=%.5f filling=%d order=%d",
+                     sym, p.order_type, p.volume, reqPrice, f, res.order);
+         AddMap(p.ticket, res.order, p.sl, p.tp);
+         sent = true;
+         break;
+      } else {
+         int err = GetLastError();
+         PrintFormat("TRS Slave MT5: OrderSend filling=%d Error=%d retcode=%d sym=%s",
+                     f, err, res.retcode, sym);
+         if (res.retcode != 10030) break; // 10030 = invalid fill — try next; other errors abort
+      }
+   }
+
+   if (!sent) {
+      PrintFormat("TRS Slave MT5: All filling modes failed for sym=%s type=%d vol=%.2f",
+                  sym, p.order_type, p.volume);
    }
 }
 
-// Fixed Unpacker using RtlMoveMemory for binary safety
-bool UnpackPayload(const uchar& buf[], int size, VMTradePayload& p)
-{
-   if (size < 60) return false; // Minimum size for the struct fields
-   
-   int offset = 0;
-   uchar tmp8[8];
-   uchar tmp4[4];
+void OnTradeTransaction(const MqlTradeTransaction& trans,
+                        const MqlTradeRequest&     req,
+                        const MqlTradeResult&      res) {
+   if (trans.type == TRADE_TRANSACTION_DEAL_ADD) {
+      PrintFormat("TRS Slave MT5: Fill confirmed deal=%d order=%d sym=%s vol=%.2f price=%.5f",
+                  trans.deal, trans.order, trans.symbol, trans.volume, trans.price);
+      for (int i = 0; i < g_mapCount; i++) {
+         if (g_map[i].dealTicket == trans.order) {
+            g_map[i].dealTicket = trans.deal;
+            break;
+         }
+      }
+   }
+}
 
-   // Ticket (Long)
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.ticket, tmp8, 8); offset += 8;
-   
-   // Symbol (Fixed 12 bytes)
-   for(int i=0; i<12; i++) p.symbol[i] = buf[offset+i]; offset += 12;
-   
-   // Order Type (Int)
-   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.order_type, tmp4, 4); offset += 4;
-   
-   // Doubles (Volume, Price, SL, TP)
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.volume, tmp8, 8); offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.price, tmp8, 8);  offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.sl, tmp8, 8);     offset += 8;
-   ArrayCopy(tmp8, buf, 0, offset, 8); RtlMoveMemory(p.tp, tmp8, 8);     offset += 8;
-   
-   // Magic (Int)
-   ArrayCopy(tmp4, buf, 0, offset, 4); RtlMoveMemory(p.magic, tmp4, 4);
-   
+// ── Map helpers ───────────────────────────────────────────────────────────────
+
+int FindMap(long masterTkt) {
+   for (int i = 0; i < g_mapCount; i++)
+      if (g_map[i].masterTicket == masterTkt) return i;
+   return -1;
+}
+
+void AddMap(long masterTkt, ulong orderOrDeal, double sl, double tp) {
+   ArrayResize(g_map, g_mapCount + 1);
+   g_map[g_mapCount].masterTicket = masterTkt;
+   g_map[g_mapCount].dealTicket   = orderOrDeal;
+   g_map[g_mapCount].sl           = sl;
+   g_map[g_mapCount].tp           = tp;
+   g_mapCount++;
+}
+
+// ── Payload deserialization ───────────────────────────────────────────────────
+
+bool UnpackPayload(const uchar& buf[], int size, VMTradePayload& p) {
+   if (size < 64) return false;
+   uchar tmp8[8];
+
+   ArrayCopy(tmp8, buf, 0, 0, 8);
+   RtlMoveMemory(p.ticket, tmp8, 8);
+
+   for (int i = 0; i < 12; i++) p.symbol[i] = buf[8 + i];
+
+   p.order_type = (int)buf[20] | ((int)buf[21] << 8) | ((int)buf[22] << 16) | ((int)buf[23] << 24);
+
+   p.volume = ReadDouble(buf, 24);
+   p.price  = ReadDouble(buf, 32);
+   p.sl     = ReadDouble(buf, 40);
+   p.tp     = ReadDouble(buf, 48);
+
+   p.magic = (int)buf[56] | ((int)buf[57] << 8) | ((int)buf[58] << 16) | ((int)buf[59] << 24);
    return true;
+}
+
+double ReadDouble(const uchar& buf[], int offset) {
+   uchar tmp[8];
+   ArrayCopy(tmp, buf, 0, offset, 8);
+   double result;
+   RtlMoveMemory(result, tmp, 8);
+   return result;
 }
