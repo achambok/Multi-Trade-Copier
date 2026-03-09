@@ -266,22 +266,23 @@ For VM slave symbol suffixes (e.g., broker appends `m`), set `symbol_suffix` on 
 # macOS
 brew install go mosquitto cargo-zigbuild
 rustup target add i686-pc-windows-gnu
-
-# Docker Desktop or OrbStack for Mosquitto
 ```
 
-### 2. Start MQTT Broker
+### 2. Start MQTT Broker (native Homebrew — no Docker required)
 
 ```bash
-cd docker
-docker compose up -d
-# Mosquitto now listening on 0.0.0.0:1883
+# Write config
+cp mosquitto-native.conf /opt/homebrew/etc/mosquitto/mosquitto.conf
+
+# Start as a background service (auto-restarts on login)
+brew services start mosquitto
+
+# Verify
+brew services list | grep mosquitto
+mosquitto_pub -h 127.0.0.1 -t test -m hello
 ```
 
-Or use native Mosquitto:
-```bash
-mosquitto -c /path/to/mosquitto-native.conf -d
-```
+> Docker is no longer used. `docker/docker-compose.yml` is kept for reference only.
 
 ### 3. Build the Bridge DLL
 
