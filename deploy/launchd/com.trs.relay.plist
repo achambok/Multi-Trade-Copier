@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.trs.relay</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/blackrossay/trs/trs-relay</string>
+    <string>/Users/blackrossay/trs/config/relay_config.json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/blackrossay/trs/relay</string>
+
+  <!-- Start at login and after every crash -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Wait 5 s before restarting after a crash -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/blackrossay/trs/logs/relay.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/blackrossay/trs/logs/relay.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/blackrossay</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+</dict>
+</plist>

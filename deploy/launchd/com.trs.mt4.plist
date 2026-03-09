@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.trs.mt4</string>
+
+  <!-- Use a wrapper script so launchd can track the process lifetime -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/blackrossay/trs/deploy/scripts/start-mt4.sh</string>
+  </array>
+
+  <!-- Start at login -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart automatically if MT4 crashes or exits unexpectedly -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Wait 10 s before restarting (gives Wine time to clean up) -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/blackrossay/trs/logs/mt4.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/blackrossay/trs/logs/mt4.log</string>
+
+</dict>
+</plist>

@@ -195,6 +195,15 @@ pub unsafe extern "C" fn send_trade_event(
     }
 
     let payload = TradePayload { ticket, symbol: sym, order_type, volume, price, sl, tp, magic, _pad: pad };
+
+    // First attempt
+    let res = publish_payload(&payload);
+    if res == 0 { return 0; }
+
+    // publish_payload cleared SOCKET_FD on failure — reconnect and retry once
+    let sock = open_socket();
+    if sock == INVALID_SOCKET { return -1; }
+    SOCKET_FD.store(sock as i32, Ordering::SeqCst);
     publish_payload(&payload)
 }
 

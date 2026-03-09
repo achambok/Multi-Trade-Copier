@@ -16,4 +16,10 @@ relay/vendor/
 **/*.ex5
 
 # Logs
-*.log
+logs/*.log
+
+# Go binary
+trs-relay
+
+# bridge intermediate dist
+bridge/dist/
