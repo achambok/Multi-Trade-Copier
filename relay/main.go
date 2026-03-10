@@ -57,6 +57,7 @@ type RelayConfig struct {
 
 type Relay struct {
 	cfg        RelayConfig
+	cfgMu      sync.RWMutex // protects cfg.MasterEquity + slaveCfgs risk fields
 	symbolMap  map[string]map[string]string
 	slaves     []adapters.SlaveAdapter
 	slaveCfgs  []SlaveConfig
@@ -138,6 +139,11 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
+	r.cfgMu.RLock()
+	masterEquity := r.cfg.MasterEquity
+	slaveCfgs := append([]SlaveConfig(nil), r.slaveCfgs...) // snapshot
+	r.cfgMu.RUnlock()
+
 	masterSymbol := payload.SymbolString()
 	baseSymbol := normalizeSymbol(masterSymbol, r.cfg.MasterSymbolSuffix)
 	log.Printf("[master] ticket=%d sym=%s (base=%s) type=%s vol=%.2f price=%.5f",
@@ -154,10 +160,10 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 			equity, err := s.GetEquity()
 			if err != nil {
 				log.Printf("[%s] GetEquity error: %v", s.Name(), err)
-				equity = r.cfg.MasterEquity
+				equity = masterEquity
 			}
 
-			scaledLot := engine.ComputeLot(payload.Volume, r.cfg.MasterEquity, equity, sc.RiskMode, sc.RiskValue)
+			scaledLot := engine.ComputeLot(payload.Volume, masterEquity, equity, sc.RiskMode, sc.RiskValue)
 
 			adapterType := slaveAdapterType(s)
 			mappedSymbol := mapSymbol(r.symbolMap, baseSymbol, adapterType)
@@ -171,9 +177,42 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 			totalElapsed := time.Since(recvAt)
 			log.Printf("[%s] OK ticket=%d sym=%s lot=%.2f mode=%s elapsed=%s total=%s",
 				s.Name(), payload.Ticket, mappedSymbol, scaledLot, sc.RiskMode, elapsed, totalElapsed)
-		}(slave, r.slaveCfgs[i])
+		}(slave, slaveCfgs[i])
 	}
 	wg.Wait()
+}
+
+// handleConfig receives a JSON message from trading/config (published by MasterEA)
+// and hot-reloads master equity + default risk mode/value for all slaves.
+//
+// JSON format (published by MasterEA):
+//
+//	{"master_equity":10000,"risk_mode":"proportional","risk_value":0}
+func (r *Relay) handleConfig(_ mqtt.Client, msg mqtt.Message) {
+	var update struct {
+		MasterEquity float64 `json:"master_equity"`
+		RiskMode     string  `json:"risk_mode"`
+		RiskValue    float64 `json:"risk_value"`
+	}
+	if err := json.Unmarshal(msg.Payload(), &update); err != nil {
+		log.Printf("[config] parse error: %v — payload: %s", err, msg.Payload())
+		return
+	}
+
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
+
+	if update.MasterEquity > 0 {
+		r.cfg.MasterEquity = update.MasterEquity
+	}
+	if update.RiskMode != "" {
+		for i := range r.slaveCfgs {
+			r.slaveCfgs[i].RiskMode  = update.RiskMode
+			r.slaveCfgs[i].RiskValue = update.RiskValue
+		}
+	}
+	log.Printf("[config] applied — master_equity=%.2f risk_mode=%s risk_value=%.4f",
+		r.cfg.MasterEquity, update.RiskMode, update.RiskValue)
 }
 
 func slaveAdapterType(s adapters.SlaveAdapter) string {
@@ -231,6 +270,11 @@ func main() {
 				log.Fatalf("subscribe error: %v", token.Error())
 			}
 			log.Printf("subscribed to %s", cfg.MasterTopic)
+			if token := c.Subscribe("trading/config", 1, r.handleConfig); token.Wait() && token.Error() != nil {
+				log.Printf("warning: could not subscribe to trading/config: %v", token.Error())
+			} else {
+				log.Printf("subscribed to trading/config (hot-reload)")
+			}
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 			log.Printf("relay MQTT connection lost: %v", err)

@@ -39,7 +39,8 @@ struct TradePayload {
 
 const MQTT_BROKER_IP: u32 = 0x0100007f; // 127.0.0.1 in network byte order
 const MQTT_PORT:      u16 = 1883;
-const TOPIC:          &[u8] = b"trading/master";
+const TOPIC_TRADE:    &[u8] = b"trading/master";
+const TOPIC_CONFIG:   &[u8] = b"trading/config";
 const CLIENT_ID:      &[u8] = b"mt4bridge";
 
 fn htons(v: u16) -> u16 { v.to_be() }
@@ -64,8 +65,9 @@ fn build_connect(buf: &mut [u8; 128]) -> usize {
     pos + CLIENT_ID.len()
 }
 
-fn build_publish(payload_bytes: &[u8], out: &mut [u8; 256]) -> usize {
-    let topic_len = TOPIC.len();
+// Generic PUBLISH builder — accepts any topic and any raw payload bytes.
+fn build_publish_raw(topic: &[u8], payload_bytes: &[u8], out: &mut [u8; 512]) -> usize {
+    let topic_len = topic.len();
     let remaining = 2 + topic_len + payload_bytes.len();
     let mut pos = 0;
     out[pos] = 0x30; pos += 1; // PUBLISH, QoS 0
@@ -79,7 +81,7 @@ fn build_publish(payload_bytes: &[u8], out: &mut [u8; 256]) -> usize {
     }
     out[pos] = (topic_len >> 8) as u8;   pos += 1;
     out[pos] = (topic_len & 0xff) as u8; pos += 1;
-    out[pos..pos + topic_len].copy_from_slice(TOPIC);
+    out[pos..pos + topic_len].copy_from_slice(topic);
     pos += topic_len;
     out[pos..pos + payload_bytes.len()].copy_from_slice(payload_bytes);
     pos + payload_bytes.len()
@@ -119,17 +121,13 @@ unsafe fn open_socket() -> SOCKET {
     sock
 }
 
-unsafe fn publish_payload(p: &TradePayload) -> i32 {
+unsafe fn publish_raw(topic: &[u8], bytes: &[u8]) -> i32 {
     let sock = SOCKET_FD.load(Ordering::SeqCst);
     if sock < 0 { return -1; }
     let sock = sock as SOCKET;
 
-    let raw = core::slice::from_raw_parts(
-        p as *const TradePayload as *const u8,
-        core::mem::size_of::<TradePayload>(),
-    );
-    let mut pub_buf = [0u8; 256];
-    let pub_len = build_publish(raw, &mut pub_buf);
+    let mut pub_buf = [0u8; 512];
+    let pub_len = build_publish_raw(topic, bytes, &mut pub_buf);
 
     if send(sock, pub_buf.as_ptr(), pub_len as i32, 0) == SOCKET_ERROR {
         SOCKET_FD.store(-1, Ordering::SeqCst);
@@ -160,15 +158,12 @@ pub unsafe extern "C" fn bridge_shutdown() {
     }
 }
 
-/// Called by MasterEA with flat args matching the MQL4 #import declaration:
-///   int send_trade_event(long ticket, uchar& symbol[], int order_type,
-///                        double volume, double price, double sl, double tp,
-///                        int magic, int pad)
-/// MQL4 passes uchar& arr[] as a pointer to the array's first byte.
+/// Send a trade event to trading/master.
+/// Called by MasterEA with flat args matching the MQL4 #import declaration.
 #[no_mangle]
 pub unsafe extern "C" fn send_trade_event(
     ticket:     i64,
-    symbol:     *const u8,   // uchar[12] — pointer to first element
+    symbol:     *const u8,
     order_type: i32,
     volume:     f64,
     price:      f64,
@@ -177,14 +172,12 @@ pub unsafe extern "C" fn send_trade_event(
     magic:      i32,
     pad:        i32,
 ) -> i32 {
-    // Auto-reconnect if socket was lost
     if SOCKET_FD.load(Ordering::SeqCst) < 0 {
         let sock = open_socket();
         if sock == INVALID_SOCKET { return -1; }
         SOCKET_FD.store(sock as i32, Ordering::SeqCst);
     }
 
-    // Copy symbol bytes safely (max 12)
     let mut sym = [0u8; 12];
     if !symbol.is_null() {
         for i in 0..12usize {
@@ -195,16 +188,46 @@ pub unsafe extern "C" fn send_trade_event(
     }
 
     let payload = TradePayload { ticket, symbol: sym, order_type, volume, price, sl, tp, magic, _pad: pad };
+    let raw = core::slice::from_raw_parts(
+        &payload as *const TradePayload as *const u8,
+        core::mem::size_of::<TradePayload>(),
+    );
 
-    // First attempt
-    let res = publish_payload(&payload);
+    let res = publish_raw(TOPIC_TRADE, raw);
     if res == 0 { return 0; }
 
-    // publish_payload cleared SOCKET_FD on failure — reconnect and retry once
+    // Reconnect and retry once
     let sock = open_socket();
     if sock == INVALID_SOCKET { return -1; }
     SOCKET_FD.store(sock as i32, Ordering::SeqCst);
-    publish_payload(&payload)
+    publish_raw(TOPIC_TRADE, raw)
+}
+
+/// Send a JSON config payload to trading/config.
+/// MasterEA builds the JSON string and passes it as a uchar array + length.
+/// The relay receives it and hot-reloads risk settings for all slaves.
+#[no_mangle]
+pub unsafe extern "C" fn send_config_event(
+    json_bytes: *const u8,
+    json_len:   i32,
+) -> i32 {
+    if json_bytes.is_null() || json_len <= 0 { return -2; }
+
+    if SOCKET_FD.load(Ordering::SeqCst) < 0 {
+        let sock = open_socket();
+        if sock == INVALID_SOCKET { return -1; }
+        SOCKET_FD.store(sock as i32, Ordering::SeqCst);
+    }
+
+    let bytes = core::slice::from_raw_parts(json_bytes, json_len as usize);
+
+    let res = publish_raw(TOPIC_CONFIG, bytes);
+    if res == 0 { return 0; }
+
+    let sock = open_socket();
+    if sock == INVALID_SOCKET { return -1; }
+    SOCKET_FD.store(sock as i32, Ordering::SeqCst);
+    publish_raw(TOPIC_CONFIG, bytes)
 }
 
 // ------------------------------------------------------------------
