@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,11 +41,15 @@ type SlaveConfig struct {
 }
 
 type RelayConfig struct {
-	MQTTBroker    string        `json:"mqtt_broker"`
-	MasterTopic   string        `json:"master_topic"`
-	MasterEquity  float64       `json:"master_equity"`
-	SymbolMapPath string        `json:"symbol_map_path"`
-	Slaves        []SlaveConfig `json:"slaves"`
+	MQTTBroker         string        `json:"mqtt_broker"`
+	MasterTopic        string        `json:"master_topic"`
+	MasterEquity       float64       `json:"master_equity"`
+	SymbolMapPath      string        `json:"symbol_map_path"`
+	// MasterSymbolSuffix is the suffix your master broker appends to symbols
+	// (e.g. "m" if master trades "EURUSDm"). The relay strips it before mapping
+	// so downstream slaves receive the clean base symbol + their own suffix.
+	MasterSymbolSuffix string        `json:"master_symbol_suffix"`
+	Slaves             []SlaveConfig `json:"slaves"`
 }
 
 type Relay struct {
@@ -73,13 +78,24 @@ func loadSymbolMap(path string) (map[string]map[string]string, error) {
 	return m, json.Unmarshal(data, &m)
 }
 
-func mapSymbol(symbolMap map[string]map[string]string, masterSymbol, adapterType string) string {
-	if entry, ok := symbolMap[masterSymbol]; ok {
+// normalizeSymbol strips the master broker's suffix (e.g. "m") from a symbol
+// to produce the clean base symbol used for downstream mapping.
+func normalizeSymbol(sym, masterSuffix string) string {
+	if masterSuffix != "" && strings.HasSuffix(sym, masterSuffix) {
+		return sym[:len(sym)-len(masterSuffix)]
+	}
+	return sym
+}
+
+// mapSymbol looks up the base symbol in the symbol map for the given adapter.
+// Falls back to the base symbol itself when no explicit mapping exists.
+func mapSymbol(symbolMap map[string]map[string]string, baseSymbol, adapterType string) string {
+	if entry, ok := symbolMap[baseSymbol]; ok {
 		if mapped, ok := entry[adapterType]; ok {
 			return mapped
 		}
 	}
-	return masterSymbol
+	return baseSymbol
 }
 
 func buildSlaves(cfgs []SlaveConfig, mqttBroker string) []adapters.SlaveAdapter {
@@ -120,8 +136,9 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 	}
 
 	masterSymbol := payload.SymbolString()
-	log.Printf("[master] ticket=%d sym=%s type=%s vol=%.2f price=%.5f",
-		payload.Ticket, masterSymbol,
+	baseSymbol := normalizeSymbol(masterSymbol, r.cfg.MasterSymbolSuffix)
+	log.Printf("[master] ticket=%d sym=%s (base=%s) type=%s vol=%.2f price=%.5f",
+		payload.Ticket, masterSymbol, baseSymbol,
 		engine.OrderTypeName(payload.OrderType), payload.Volume, payload.Price)
 
 	var wg sync.WaitGroup
@@ -140,7 +157,7 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 			scaledLot := engine.ComputeLot(payload.Volume, r.cfg.MasterEquity, equity, sc.RiskMode, sc.RiskValue)
 
 			adapterType := slaveAdapterType(s)
-			mappedSymbol := mapSymbol(r.symbolMap, masterSymbol, adapterType)
+			mappedSymbol := mapSymbol(r.symbolMap, baseSymbol, adapterType)
 
 			if err := s.PlaceOrder(payload, scaledLot, mappedSymbol); err != nil {
 				log.Printf("[%s] PlaceOrder error: %v", s.Name(), err)

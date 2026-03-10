@@ -49,7 +49,7 @@ void OnInit() {
    g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt4_" + ACCOUNT_ID);
    if (g_handle < 0) { Print("TRS Slave MT4: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT4: Subscribe failed"); ExpertRemove(); return; }
-   EventSetMillisecondTimer(1);
+   EventSetMillisecondTimer(50);
    Print("TRS Slave MT4 online, topic=", g_topic);
 }
 
@@ -73,12 +73,33 @@ void OnTimer() {
    int mapIdx = FindMap(p.ticket);
 
    if (mapIdx >= 0) {
-      // Known ticket — check if SL/TP changed and modify
+      int slaveTkt = g_map[mapIdx].slaveTicket;
+
+      // ── Close signal ──────────────────────────────────────────────────────
+      if (p.order_type == 10) {
+         if (!OrderSelect(slaveTkt, SELECT_BY_TICKET)) {
+            PrintFormat("TRS Slave MT4: Close — OrderSelect failed ticket=%d err=%d", slaveTkt, GetLastError());
+            return;
+         }
+         double closePrice = (OrderType() == OP_BUY)
+                             ? MarketInfo(OrderSymbol(), MODE_BID)
+                             : MarketInfo(OrderSymbol(), MODE_ASK);
+         if (!OrderClose(slaveTkt, OrderLots(), closePrice, 3, clrNONE))
+            PrintFormat("TRS Slave MT4: OrderClose Error %d | ticket=%d", GetLastError(), slaveTkt);
+         else
+            PrintFormat("TRS Slave MT4: Closed ticket=%d sym=%s", slaveTkt, OrderSymbol());
+         // Remove from map
+         for (int j = mapIdx; j < g_mapCount - 1; j++) g_map[j] = g_map[j + 1];
+         g_mapCount--;
+         ArrayResize(g_map, g_mapCount);
+         return;
+      }
+
+      // ── SL/TP modify ──────────────────────────────────────────────────────
       bool slChanged = MathAbs(g_map[mapIdx].sl - p.sl) > 0.000001;
       bool tpChanged = MathAbs(g_map[mapIdx].tp - p.tp) > 0.000001;
-      if (!slChanged && !tpChanged) return; // nothing changed
+      if (!slChanged && !tpChanged) return;
 
-      int slaveTkt = g_map[mapIdx].slaveTicket;
       if (!OrderSelect(slaveTkt, SELECT_BY_TICKET)) {
          PrintFormat("TRS Slave MT4: Modify — OrderSelect failed ticket=%d err=%d", slaveTkt, GetLastError());
          return;
@@ -95,11 +116,15 @@ void OnTimer() {
       return;
    }
 
-   // ── New ticket — open order ───────────────────────────────────────────────
-   if (!SymbolSelect(sym, true)) {
-      PrintFormat("TRS Slave MT4: SymbolSelect failed for '%s'", sym);
+   // ── Close signal with no mapping (already closed or never opened) ─────────
+   if (p.order_type == 10) {
+      PrintFormat("TRS Slave MT4: CLOSE signal ticket=%d — no local mapping, ignoring", p.ticket);
       return;
    }
+
+   // ── New ticket — open order ───────────────────────────────────────────────
+   sym = ResolveSymbol(sym);
+   if (StringLen(sym) == 0) return;
    RefreshRates();
 
    double price = 0;
@@ -170,4 +195,58 @@ double ReadDouble(const uchar& buf[], int offset) {
    double result;
    RtlMoveMemory(result, tmp, 8);
    return result;
+}
+
+// ResolveSymbol tries the received symbol and common broker suffix variants.
+// Returns the first symbol that exists on this broker, or "" on failure.
+string ResolveSymbol(string sym) {
+   // Suffixes to try stripping (broker appended to base)
+   string stripSuffixes[6];
+   stripSuffixes[0] = "m";
+   stripSuffixes[1] = ".pro";
+   stripSuffixes[2] = ".ecn";
+   stripSuffixes[3] = ".r";
+   stripSuffixes[4] = ".raw";
+   stripSuffixes[5] = ".cf";
+
+   // Suffixes to try appending (this broker may require them)
+   string addSuffixes[6];
+   addSuffixes[0] = "m";
+   addSuffixes[1] = ".pro";
+   addSuffixes[2] = ".ecn";
+   addSuffixes[3] = ".r";
+   addSuffixes[4] = ".raw";
+   addSuffixes[5] = ".cf";
+
+   // 1. Try as-is
+   if (SymbolSelect(sym, true) && MarketInfo(sym, MODE_ASK) > 0) return sym;
+
+   // 2. Strip known suffixes to get base, then try base alone + add suffixes
+   string base = sym;
+   for (int i = 0; i < 6; i++) {
+      int slen = StringLen(sym);
+      int sflen = StringLen(stripSuffixes[i]);
+      if (slen > sflen && StringSubstr(sym, slen - sflen) == stripSuffixes[i]) {
+         base = StringSubstr(sym, 0, slen - sflen);
+         break;
+      }
+   }
+
+   // 3. Try base
+   if (base != sym && SymbolSelect(base, true) && MarketInfo(base, MODE_ASK) > 0) {
+      PrintFormat("TRS Slave MT4: Resolved '%s' → '%s'", sym, base);
+      return base;
+   }
+
+   // 4. Try base + each suffix
+   for (int i = 0; i < 6; i++) {
+      string candidate = base + addSuffixes[i];
+      if (SymbolSelect(candidate, true) && MarketInfo(candidate, MODE_ASK) > 0) {
+         PrintFormat("TRS Slave MT4: Resolved '%s' → '%s'", sym, candidate);
+         return candidate;
+      }
+   }
+
+   PrintFormat("TRS Slave MT4: Cannot resolve symbol '%s' — not found on this broker", sym);
+   return "";
 }

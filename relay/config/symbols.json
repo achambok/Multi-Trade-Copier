@@ -3,7 +3,19 @@
     "tradelocker": "GOLD",
     "matchtrade":  "XAUUSD",
     "tradovate":   "XAUUSD",
-    "vm_slave":    "XAUUSD.pro"
+    "vm_slave":    "XAUUSD"
+  },
+  "GOLD": {
+    "tradelocker": "GOLD",
+    "matchtrade":  "XAUUSD",
+    "tradovate":   "XAUUSD",
+    "vm_slave":    "XAUUSD"
+  },
+  "BTCUSD": {
+    "tradelocker": "BTCUSD",
+    "matchtrade":  "BTCUSD",
+    "tradovate":   "BTCUSD",
+    "vm_slave":    "BTCUSD"
   },
   "EURUSD": {
     "tradelocker": "EURUSD",
@@ -23,10 +35,58 @@
     "tradovate":   "USDJPY",
     "vm_slave":    "USDJPY"
   },
-  "BTCUSD": {
-    "tradelocker": "BTCUSD",
-    "matchtrade":  "BTCUSD",
-    "tradovate":   "BTCUSD",
-    "vm_slave":    "BTCUSD"
+  "USDCHF": {
+    "tradelocker": "USDCHF",
+    "matchtrade":  "USDCHF",
+    "tradovate":   "USDCHF",
+    "vm_slave":    "USDCHF"
+  },
+  "AUDUSD": {
+    "tradelocker": "AUDUSD",
+    "matchtrade":  "AUDUSD",
+    "tradovate":   "AUDUSD",
+    "vm_slave":    "AUDUSD"
+  },
+  "AUDCAD": {
+    "tradelocker": "AUDCAD",
+    "matchtrade":  "AUDCAD",
+    "tradovate":   "AUDCAD",
+    "vm_slave":    "AUDCAD"
+  },
+  "USDCAD": {
+    "tradelocker": "USDCAD",
+    "matchtrade":  "USDCAD",
+    "tradovate":   "USDCAD",
+    "vm_slave":    "USDCAD"
+  },
+  "NZDUSD": {
+    "tradelocker": "NZDUSD",
+    "matchtrade":  "NZDUSD",
+    "tradovate":   "NZDUSD",
+    "vm_slave":    "NZDUSD"
+  },
+  "US30": {
+    "tradelocker": "US30",
+    "matchtrade":  "US30",
+    "tradovate":   "YM",
+    "vm_slave":    "US30"
+  },
+  "USTEC": {
+    "tradelocker": "USTEC",
+    "matchtrade":  "USTEC",
+    "tradovate":   "NQ",
+    "vm_slave":    "USTEC"
+  },
+  "SPX500": {
+    "tradelocker": "SPX500",
+    "matchtrade":  "SPX500",
+    "tradovate":   "ES",
+    "vm_slave":    "SPX500"
+  },
+  "BTCEUR": {
+    "tradelocker": "BTCEUR",
+    "matchtrade":  "BTCEUR",
+    "tradovate":   "BTCEUR",
+    "vm_slave":    "BTCEUR"
   }
 }

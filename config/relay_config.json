@@ -1,8 +1,9 @@
 {
-  "mqtt_broker":    "tcp://localhost:1883",
-  "master_topic":   "trading/master",
-  "master_equity":  10000,
-  "symbol_map_path": "config/symbols.json",
+  "mqtt_broker":           "tcp://localhost:1883",
+  "master_topic":          "trading/master",
+  "master_equity":         10000,
+  "symbol_map_path":       "config/symbols.json",
+  "master_symbol_suffix":  "",
   "slaves": [
     {
       "id":         "tl_acc1",

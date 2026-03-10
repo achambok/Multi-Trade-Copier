@@ -123,10 +123,8 @@ void OnTimer() {
    }
 
    // ── New ticket — open order ───────────────────────────────────────────────
-   if (!SymbolSelect(sym, true)) {
-      PrintFormat("TRS Slave MT4: SymbolSelect failed for '%s'", sym);
-      return;
-   }
+   sym = ResolveSymbol(sym);
+   if (StringLen(sym) == 0) return;
    RefreshRates();
 
    double price = 0;
@@ -197,4 +195,58 @@ double ReadDouble(const uchar& buf[], int offset) {
    double result;
    RtlMoveMemory(result, tmp, 8);
    return result;
+}
+
+// ResolveSymbol tries the received symbol and common broker suffix variants.
+// Returns the first symbol that exists on this broker, or "" on failure.
+string ResolveSymbol(string sym) {
+   // Suffixes to try stripping (broker appended to base)
+   string stripSuffixes[6];
+   stripSuffixes[0] = "m";
+   stripSuffixes[1] = ".pro";
+   stripSuffixes[2] = ".ecn";
+   stripSuffixes[3] = ".r";
+   stripSuffixes[4] = ".raw";
+   stripSuffixes[5] = ".cf";
+
+   // Suffixes to try appending (this broker may require them)
+   string addSuffixes[6];
+   addSuffixes[0] = "m";
+   addSuffixes[1] = ".pro";
+   addSuffixes[2] = ".ecn";
+   addSuffixes[3] = ".r";
+   addSuffixes[4] = ".raw";
+   addSuffixes[5] = ".cf";
+
+   // 1. Try as-is
+   if (SymbolSelect(sym, true) && MarketInfo(sym, MODE_ASK) > 0) return sym;
+
+   // 2. Strip known suffixes to get base, then try base alone + add suffixes
+   string base = sym;
+   for (int i = 0; i < 6; i++) {
+      int slen = StringLen(sym);
+      int sflen = StringLen(stripSuffixes[i]);
+      if (slen > sflen && StringSubstr(sym, slen - sflen) == stripSuffixes[i]) {
+         base = StringSubstr(sym, 0, slen - sflen);
+         break;
+      }
+   }
+
+   // 3. Try base
+   if (base != sym && SymbolSelect(base, true) && MarketInfo(base, MODE_ASK) > 0) {
+      PrintFormat("TRS Slave MT4: Resolved '%s' → '%s'", sym, base);
+      return base;
+   }
+
+   // 4. Try base + each suffix
+   for (int i = 0; i < 6; i++) {
+      string candidate = base + addSuffixes[i];
+      if (SymbolSelect(candidate, true) && MarketInfo(candidate, MODE_ASK) > 0) {
+         PrintFormat("TRS Slave MT4: Resolved '%s' → '%s'", sym, candidate);
+         return candidate;
+      }
+   }
+
+   PrintFormat("TRS Slave MT4: Cannot resolve symbol '%s' — not found on this broker", sym);
+   return "";
 }

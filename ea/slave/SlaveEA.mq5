@@ -259,6 +259,14 @@ void ProcessPending(int idx) {
    if (FindMap(g_pending[idx].masterTicket) >= 0) { RemovePending(idx); return; }
 
    string sym = g_pending[idx].symbol;
+   sym = ResolveSymbol(sym);
+   if (StringLen(sym) == 0) {
+      if (g_pending[idx].retries >= 3) RemovePending(idx); // give up after 3 resolve attempts
+      return;
+   }
+   // Update stored symbol with resolved name for subsequent retries
+   g_pending[idx].symbol = sym;
+
    if (!SymbolSelect(sym, true)) {
       PrintFormat("TRS Slave MT5: SymbolSelect failed '%s' retry=%d err=%d", sym, g_pending[idx].retries, GetLastError());
       return;
@@ -374,4 +382,46 @@ double ReadDouble(const uchar& buf[], int offset) {
    double result;
    RtlMoveMemory(result, tmp, 8);
    return result;
+}
+
+// ResolveSymbol tries the received symbol and common broker suffix variants.
+// Returns the first symbol whose bid/ask is available on this broker, or "".
+string ResolveSymbol(string sym) {
+   string strips[6], adds[6];
+   strips[0]="m"; strips[1]=".pro"; strips[2]=".ecn";
+   strips[3]=".r"; strips[4]=".raw"; strips[5]=".cf";
+   adds[0]  ="m"; adds[1]  =".pro"; adds[2]  =".ecn";
+   adds[3]  =".r"; adds[4] =".raw"; adds[5]  =".cf";
+
+   // 1. Try as-is
+   if (SymbolSelect(sym, true) && SymbolInfoDouble(sym, SYMBOL_ASK) > 0) return sym;
+
+   // 2. Derive base by stripping known suffixes
+   string base = sym;
+   for (int i = 0; i < 6; i++) {
+      int slen  = StringLen(sym);
+      int sflen = StringLen(strips[i]);
+      if (slen > sflen && StringSubstr(sym, slen - sflen) == strips[i]) {
+         base = StringSubstr(sym, 0, slen - sflen);
+         break;
+      }
+   }
+
+   // 3. Try base
+   if (base != sym && SymbolSelect(base, true) && SymbolInfoDouble(base, SYMBOL_ASK) > 0) {
+      PrintFormat("TRS Slave MT5: Resolved '%s' → '%s'", sym, base);
+      return base;
+   }
+
+   // 4. Try base + each suffix
+   for (int i = 0; i < 6; i++) {
+      string c = base + adds[i];
+      if (SymbolSelect(c, true) && SymbolInfoDouble(c, SYMBOL_ASK) > 0) {
+         PrintFormat("TRS Slave MT5: Resolved '%s' → '%s'", sym, c);
+         return c;
+      }
+   }
+
+   PrintFormat("TRS Slave MT5: Cannot resolve symbol '%s' — not found on this broker", sym);
+   return "";
 }
