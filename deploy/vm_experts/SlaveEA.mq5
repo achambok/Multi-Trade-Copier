@@ -185,6 +185,16 @@ void PlacePendingOrder(long masterTkt, string sym, int orderType, double vol,
    req.symbol   = sym;
    req.volume   = vol;
    req.type     = mt5Type;
+
+   // Normalize price, SL, TP to broker tick size to avoid invalid price errors
+   double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   int    digits   = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   if (tickSize > 0) {
+      price = NormalizeDouble(MathRound(price / tickSize) * tickSize, digits);
+      if (sl > 0) sl = NormalizeDouble(MathRound(sl / tickSize) * tickSize, digits);
+      if (tp > 0) tp = NormalizeDouble(MathRound(tp / tickSize) * tickSize, digits);
+   }
+
    req.price    = price;
    req.sl       = sl;
    req.tp       = tp;

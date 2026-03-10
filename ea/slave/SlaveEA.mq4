@@ -119,6 +119,14 @@ void OnTimer() {
          return;
       }
       double modPrice = isPending ? p.price : OrderOpenPrice();
+      // Normalize to broker tick size
+      double tickSize = MarketInfo(OrderSymbol(), MODE_TICKSIZE);
+      int    digits   = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      if (tickSize > 0) {
+         modPrice = NormalizeDouble(MathRound(modPrice / tickSize) * tickSize, digits);
+         if (p.sl > 0) p.sl = NormalizeDouble(MathRound(p.sl / tickSize) * tickSize, digits);
+         if (p.tp > 0) p.tp = NormalizeDouble(MathRound(p.tp / tickSize) * tickSize, digits);
+      }
       if (!OrderModify(slaveTkt, modPrice, p.sl, p.tp, 0, clrNONE)) {
          PrintFormat("TRS Slave MT4: OrderModify Error %d | ticket=%d price=%.5f sl=%.5f tp=%.5f",
                      GetLastError(), slaveTkt, modPrice, p.sl, p.tp);
@@ -156,6 +164,15 @@ void OnTimer() {
    }
 
    if (price <= 0) { PrintFormat("TRS Slave MT4: No price for '%s'", sym); return; }
+
+   // Normalize price, SL, TP to broker tick size to avoid ERR_INVALID_PRICE (4107)
+   double tickSize = MarketInfo(sym, MODE_TICKSIZE);
+   int    digits   = (int)MarketInfo(sym, MODE_DIGITS);
+   if (tickSize > 0) {
+      price = NormalizeDouble(MathRound(price / tickSize) * tickSize, digits);
+      if (p.sl > 0) p.sl = NormalizeDouble(MathRound(p.sl / tickSize) * tickSize, digits);
+      if (p.tp > 0) p.tp = NormalizeDouble(MathRound(p.tp / tickSize) * tickSize, digits);
+   }
 
    int ticket = OrderSend(sym, p.order_type, p.volume, price, 3, p.sl, p.tp, "TRS", MAGIC, 0, clrNONE);
    if (ticket < 0) {
