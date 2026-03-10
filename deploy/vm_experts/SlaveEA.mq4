@@ -1,11 +1,14 @@
 #property strict
 #property copyright "TRS Slave EA MT4"
-#property version   "1.10"
+#property version   "1.20"
 
 #define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
-#define ACCOUNT_ID  "vm_mt4"
 #define MAGIC       20240101
+
+// Set this to match the slave "account_id" in relay_config.json
+// e.g. vm_mt4_icmarkets
+input string AccountID = "vm_mt4_icmarkets";
 
 #import "MQTTClient.dll"
    int  MQTT_Connect(string host, int port, string clientId);
@@ -20,7 +23,7 @@
 #import
 
 int    g_handle = -1;
-string g_topic  = "trading/vm_slaves/" + ACCOUNT_ID;
+string g_topic  = "";
 
 // ── Master→Slave ticket map ───────────────────────────────────────────────────
 struct TicketMap {
@@ -46,7 +49,8 @@ struct VMTradePayload {
 };
 
 void OnInit() {
-   g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt4_" + ACCOUNT_ID);
+   g_topic  = "trading/vm_slaves/" + AccountID;
+   g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt4_" + AccountID);
    if (g_handle < 0) { Print("TRS Slave MT4: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT4: Subscribe failed"); ExpertRemove(); return; }
    EventSetMillisecondTimer(50);

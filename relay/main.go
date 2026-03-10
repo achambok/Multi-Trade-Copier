@@ -36,8 +36,11 @@ type SlaveConfig struct {
 	// Risk engine fields
 	// risk_mode: "proportional" | "percent" | "fixed_lot" | "fixed_dollars"
 	// risk_value: lot size, percentage, or dollar amount depending on mode
-	RiskMode  string  `json:"risk_mode"`
-	RiskValue float64 `json:"risk_value"`
+	RiskMode        string            `json:"risk_mode"`
+	RiskValue       float64           `json:"risk_value"`
+	// SymbolOverrides maps base symbol names to broker-specific names for this slave only.
+	// Example: {"XAUUSD": "GOLD"} for brokers that list gold as GOLD not XAUUSD.
+	SymbolOverrides map[string]string `json:"symbol_overrides"`
 }
 
 type RelayConfig struct {
@@ -117,7 +120,7 @@ func buildSlaves(cfgs []SlaveConfig, mqttBroker string) []adapters.SlaveAdapter 
 			))
 		case "vm_slave":
 			slaves = append(slaves, adapters.NewVMSlaveAdapter(
-				sc.AccountID, mqttBroker, sc.Equity, sc.SymbolSuffix,
+				sc.AccountID, mqttBroker, sc.Equity, sc.SymbolSuffix, sc.SymbolOverrides,
 			))
 		default:
 			log.Printf("unknown slave type: %s (id=%s) — skipped", sc.Type, sc.ID)

@@ -3,10 +3,42 @@
   "master_topic":          "trading/master",
   "master_equity":         10000,
   "symbol_map_path":       "config/symbols.json",
-
   "master_symbol_suffix":  "m",
 
   "slaves": [
+    {
+      "id":           "vm_mt4_icmarkets",
+      "type":         "vm_slave",
+      "account_id":   "vm_mt4_icmarkets",
+      "symbol_suffix": "",
+      "equity":       5000,
+      "risk_mode":    "proportional",
+      "risk_value":   0,
+      "symbol_overrides": {}
+    },
+    {
+      "id":           "vm_mt5_xm",
+      "type":         "vm_slave",
+      "account_id":   "vm_mt5_xm",
+      "symbol_suffix": "",
+      "equity":       5000,
+      "risk_mode":    "proportional",
+      "risk_value":   0,
+      "symbol_overrides": {
+        "XAUUSD": "GOLD",
+        "XAGUSD": "SILVER"
+      }
+    },
+    {
+      "id":           "vm_mt5_exness",
+      "type":         "vm_slave",
+      "account_id":   "vm_mt5_exness",
+      "symbol_suffix": "",
+      "equity":       5000,
+      "risk_mode":    "proportional",
+      "risk_value":   0,
+      "symbol_overrides": {}
+    },
     {
       "id":         "tl_acc1",
       "type":       "tradelocker",
@@ -39,24 +71,6 @@
       "device_id":    "REPLACE_DEVICE_UUID",
       "app_id":       "Sample App",
       "app_version":  "1.0",
-      "risk_mode":    "proportional",
-      "risk_value":   0
-    },
-    {
-      "id":           "vm_mt4",
-      "type":         "vm_slave",
-      "account_id":   "vm_mt4",
-      "symbol_suffix": "",
-      "equity":       5000,
-      "risk_mode":    "proportional",
-      "risk_value":   0
-    },
-    {
-      "id":           "vm_mt5",
-      "type":         "vm_slave",
-      "account_id":   "vm_mt5",
-      "symbol_suffix": "",
-      "equity":       5000,
       "risk_mode":    "proportional",
       "risk_value":   0
     }

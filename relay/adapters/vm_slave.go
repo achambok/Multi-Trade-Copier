@@ -1,8 +1,8 @@
 package adapters
 
 import (
-	"encoding/binary"
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"sync"
@@ -13,21 +13,23 @@ import (
 )
 
 type VMSlaveAdapter struct {
-	AccountID    string
-	BrokerURL    string
-	EquityValue  float64
-	SymbolSuffix string // e.g. "m" for brokers that append a suffix to all symbols
+	AccountID       string
+	BrokerURL       string
+	EquityValue     float64
+	SymbolSuffix    string
+	SymbolOverrides map[string]string // per-slave symbol name overrides, e.g. {"XAUUSD":"GOLD"}
 
 	mu     sync.RWMutex
 	client mqtt.Client
 }
 
-func NewVMSlaveAdapter(accountID, brokerURL string, equity float64, symbolSuffix string) *VMSlaveAdapter {
+func NewVMSlaveAdapter(accountID, brokerURL string, equity float64, symbolSuffix string, overrides map[string]string) *VMSlaveAdapter {
 	a := &VMSlaveAdapter{
-		AccountID:    accountID,
-		BrokerURL:    brokerURL,
-		EquityValue:  equity,
-		SymbolSuffix: symbolSuffix,
+		AccountID:       accountID,
+		BrokerURL:       brokerURL,
+		EquityValue:     equity,
+		SymbolSuffix:    symbolSuffix,
+		SymbolOverrides: overrides,
 	}
 	go a.connect()
 	return a
@@ -93,8 +95,17 @@ func (a *VMSlaveAdapter) PlaceOrder(p *engine.TradePayload, scaledLot float64, m
 		return fmt.Errorf("vm_slave[%s]: MQTT client not connected", a.AccountID)
 	}
 
+	// Apply per-slave symbol override (e.g. XM: XAUUSD → GOLD)
+	finalSymbol := mappedSymbol
+	if a.SymbolOverrides != nil {
+		if override, ok := a.SymbolOverrides[mappedSymbol]; ok {
+			log.Printf("vm_slave[%s] symbol override: %s → %s", a.AccountID, mappedSymbol, override)
+			finalSymbol = override
+		}
+	}
+	finalSymbol = finalSymbol + a.SymbolSuffix
+
 	var sym [12]byte
-	finalSymbol := mappedSymbol + a.SymbolSuffix
 	copy(sym[:], []byte(finalSymbol))
 
 	vp := VMTradePayload{

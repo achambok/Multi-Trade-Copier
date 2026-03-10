@@ -1,10 +1,14 @@
 #property copyright "TRS Slave EA MT5"
-#property version   "1.40"
+#property version   "1.50"
 
 #define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
-#define ACCOUNT_ID  "vm_mt5"
 #define MAGIC       20240101
+
+// Set this to match the slave "account_id" in relay_config.json.
+// XM MT5 example      : vm_mt5_xm
+// Exness MT5 example  : vm_mt5_exness
+input string AccountID = "vm_mt5_xm";
 
 #import "MQTTClient.dll"
    int  MQTT_Connect(string host, int port, string clientId);
@@ -19,7 +23,7 @@
 #import
 
 int    g_handle    = -1;
-string g_topic     = "trading/vm_slaves/" + ACCOUNT_ID;
+string g_topic     = "";
 int    g_retryTick = 0;   // counts timer ticks for retry backoff
 
 // ── Master→Slave position map ─────────────────────────────────────────────────
@@ -61,11 +65,12 @@ struct VMTradePayload {
 //─────────────────────────────────────────────────────────────────────────────
 
 void OnInit() {
-   g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt5_" + ACCOUNT_ID);
+   g_topic  = "trading/vm_slaves/" + AccountID;
+   g_handle = MQTT_Connect(MQTT_HOST, MQTT_PORT, "slave_mt5_" + AccountID);
    if (g_handle < 0) { Print("TRS Slave MT5: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT5: Subscribe failed"); ExpertRemove(); return; }
    EventSetMillisecondTimer(100);
-   Print("TRS Slave MT5: ONLINE v1.40. Topic: ", g_topic);
+   Print("TRS Slave MT5: ONLINE v1.50. Topic: ", g_topic);
 }
 
 void OnDeinit(const int reason) {
