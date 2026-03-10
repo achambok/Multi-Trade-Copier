@@ -7,36 +7,39 @@
 
   "slaves": [
     {
-      "id":           "vm_mt4_icmarkets",
-      "type":         "vm_slave",
-      "account_id":   "vm_mt4_icmarkets",
-      "symbol_suffix": "",
-      "equity":       5000,
-      "risk_mode":    "proportional",
-      "risk_value":   0,
+      "id":             "vm_mt4_icmarkets",
+      "type":           "vm_slave",
+      "account_id":     "vm_mt4_icmarkets",
+      "symbol_suffix":  "",
+      "equity":         10000,
+      "risk_mode":      "proportional",
+      "risk_value":     0,
+      "contract_size":  100000,
       "symbol_overrides": {}
     },
     {
-      "id":           "vm_mt5_xm",
-      "type":         "vm_slave",
-      "account_id":   "vm_mt5_xm",
-      "symbol_suffix": "",
-      "equity":       5000,
-      "risk_mode":    "proportional",
-      "risk_value":   0,
+      "id":             "vm_mt5_xm",
+      "type":           "vm_slave",
+      "account_id":     "vm_mt5_xm",
+      "symbol_suffix":  "",
+      "equity":         10000,
+      "risk_mode":      "proportional",
+      "risk_value":     0,
+      "contract_size":  100000,
       "symbol_overrides": {
         "XAUUSD": "GOLD",
         "XAGUSD": "SILVER"
       }
     },
     {
-      "id":           "vm_mt5_exness",
-      "type":         "vm_slave",
-      "account_id":   "vm_mt5_exness",
-      "symbol_suffix": "",
-      "equity":       5000,
-      "risk_mode":    "proportional",
-      "risk_value":   0,
+      "id":             "vm_mt5_exness",
+      "type":           "vm_slave",
+      "account_id":     "vm_mt5_exness",
+      "symbol_suffix":  "",
+      "equity":         10000,
+      "risk_mode":      "proportional",
+      "risk_value":     0,
+      "contract_size":  100000,
       "symbol_overrides": {}
     },
     {
@@ -47,8 +50,10 @@
       "email":      "REPLACE_EMAIL",
       "password":   "REPLACE_PASSWORD",
       "server_id":  "REPLACE_SERVER_ID",
+      "equity":     10000,
       "risk_mode":  "proportional",
-      "risk_value": 0
+      "risk_value": 0,
+      "contract_size": 100000
     },
     {
       "id":         "mt_acc1",
@@ -57,8 +62,10 @@
       "account_id": "REPLACE_ACCOUNT_ID",
       "api_key":    "REPLACE_API_KEY",
       "stomp_addr": "broker.matchtrade.com:61613",
+      "equity":     10000,
       "risk_mode":  "proportional",
-      "risk_value": 0
+      "risk_value": 0,
+      "contract_size": 100000
     },
     {
       "id":           "tv_acc1",
@@ -71,8 +78,10 @@
       "device_id":    "REPLACE_DEVICE_UUID",
       "app_id":       "Sample App",
       "app_version":  "1.0",
+      "equity":       10000,
       "risk_mode":    "proportional",
-      "risk_value":   0
+      "risk_value":   0,
+      "contract_size": 100000
     }
   ]
 }

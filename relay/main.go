@@ -35,9 +35,11 @@ type SlaveConfig struct {
 	Equity       float64 `json:"equity"`
 	// Risk engine fields
 	// risk_mode: "proportional" | "percent" | "fixed_lot" | "fixed_dollars"
-	// risk_value: lot size, percentage, or dollar amount depending on mode
+	// risk_value: percentage for percent mode, lots for fixed_lot, USD for fixed_dollars
+	// contract_size: units per lot (100000 for forex, 100 for XAUUSD, 1000 for US30)
 	RiskMode        string            `json:"risk_mode"`
 	RiskValue       float64           `json:"risk_value"`
+	ContractSize    float64           `json:"contract_size"`
 	// SymbolOverrides maps base symbol names to broker-specific names for this slave only.
 	// Example: {"XAUUSD": "GOLD"} for brokers that list gold as GOLD not XAUUSD.
 	SymbolOverrides map[string]string `json:"symbol_overrides"`
@@ -163,7 +165,12 @@ func (r *Relay) handleMessage(_ mqtt.Client, msg mqtt.Message) {
 				equity = masterEquity
 			}
 
-			scaledLot := engine.ComputeLot(payload.Volume, masterEquity, equity, sc.RiskMode, sc.RiskValue)
+			contractSize := sc.ContractSize
+			if contractSize <= 0 {
+				contractSize = 100000 // default: standard forex lot
+			}
+			scaledLot := engine.ComputeLot(payload.Volume, masterEquity, equity,
+				payload.Price, payload.SL, sc.RiskMode, sc.RiskValue, contractSize)
 
 			adapterType := slaveAdapterType(s)
 			mappedSymbol := mapSymbol(r.symbolMap, baseSymbol, adapterType)

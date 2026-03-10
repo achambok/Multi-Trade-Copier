@@ -18,7 +18,7 @@ input bool CopyManualTrades = true;
 // ── Risk / lot-sizing inputs ──────────────────────────────────────────────────
 enum ENUM_RISK_MODE {
    RISK_PROPORTIONAL  = 0,  // Proportional  — slaveLot = masterLot x (slaveEquity / masterEquity)
-   RISK_PERCENT       = 1,  // Lot Multiplier — slaveLot = masterLot x (RiskValue / 100)  [100=copy, 50=half, 200=double]
+   RISK_PERCENT       = 1,  // % Equity Risk  — slave risks RiskValue% of its equity (needs SL set)
    RISK_FIXED_LOT     = 2,  // Fixed Lot      — always trade exactly RiskValue lots
    RISK_FIXED_DOLLARS = 3,  // Fixed Dollars  — always risk exactly RiskValue USD
 };
@@ -31,8 +31,8 @@ input double          MasterEquity  = 0;
 input ENUM_RISK_MODE  RiskMode      = RISK_PROPORTIONAL;
 
 // RiskValue: meaning depends on RiskMode selected above.
-//   Proportional  → ignored
-//   Lot Multiplier → 100 = same lot as master, 50 = half, 200 = double
+//   Proportional   → ignored
+//   % Equity Risk  → e.g. 2.0 = slave risks 2% of its equity per trade (SL must be set)
 //   Fixed Lot      → e.g. 0.10 = 0.10 lots on every trade
 //   Fixed Dollars  → e.g. 50   = risk $50 per trade
 input double          RiskValue     = 0;
