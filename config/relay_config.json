@@ -3,7 +3,9 @@
   "master_topic":          "trading/master",
   "master_equity":         10000,
   "symbol_map_path":       "config/symbols.json",
-  "master_symbol_suffix":  "",
+
+  "master_symbol_suffix":  "m",
+
   "slaves": [
     {
       "id":         "tl_acc1",
@@ -44,6 +46,7 @@
       "id":           "vm_mt4",
       "type":         "vm_slave",
       "account_id":   "vm_mt4",
+      "symbol_suffix": "",
       "equity":       5000,
       "risk_mode":    "proportional",
       "risk_value":   0
@@ -52,7 +55,7 @@
       "id":           "vm_mt5",
       "type":         "vm_slave",
       "account_id":   "vm_mt5",
-      "symbol_suffix": "m",
+      "symbol_suffix": "",
       "equity":       5000,
       "risk_mode":    "proportional",
       "risk_value":   0
