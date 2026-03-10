@@ -16,26 +16,29 @@ input int  Magic5          = -1;        // spare slot
 input bool CopyManualTrades = true;
 
 // ── Risk / lot-sizing inputs ──────────────────────────────────────────────────
-// MasterEquity : your master account equity used as the scaling denominator.
-//   0 = auto (uses AccountEquity() live — recommended).
-input double MasterEquity  = 0;
+enum ENUM_RISK_MODE {
+   RISK_PROPORTIONAL  = 0,  // Proportional  — slaveLot = masterLot x (slaveEquity / masterEquity)
+   RISK_PERCENT       = 1,  // Percent        — slave risks RiskValue % of its equity
+   RISK_FIXED_LOT     = 2,  // Fixed Lot      — always trade exactly RiskValue lots
+   RISK_FIXED_DOLLARS = 3,  // Fixed Dollars  — always risk exactly RiskValue USD
+};
 
-// RiskMode controls how slave lot sizes are calculated:
-//   proportional  — slaveLot = masterLot × (slaveEquity / masterEquity)  [default]
-//   percent       — slave risks RiskValue% of its equity per trade
-//   fixed_lot     — every trade uses exactly RiskValue lots
-//   fixed_dollars — every trade risks exactly RiskValue USD
-input string RiskMode      = "proportional";
+// MasterEquity: your master account equity (denominator for proportional scaling).
+//   0 = auto — uses AccountEquity() live (recommended).
+input double          MasterEquity  = 0;
 
-// RiskValue meaning depends on RiskMode (ignored for proportional).
-//   percent       → e.g. 1.0  = 1% of slave equity
-//   fixed_lot     → e.g. 0.10 = 0.10 lots always
-//   fixed_dollars → e.g. 50   = risk $50 per trade
-input double RiskValue     = 0;
+// RiskMode: select how slave lot sizes are calculated.
+input ENUM_RISK_MODE  RiskMode      = RISK_PROPORTIONAL;
 
-// PublishConfig: flip to true (then back to false) to force-resend risk
-// settings to the relay without restarting the EA.
-input bool   PublishConfig = false;
+// RiskValue: meaning depends on RiskMode selected above.
+//   Proportional  → ignored (equity ratio used automatically)
+//   Percent        → e.g. 1.0  = 1% of slave equity per trade
+//   Fixed Lot      → e.g. 0.10 = 0.10 lots on every trade
+//   Fixed Dollars  → e.g. 50   = risk $50 per trade
+input double          RiskValue     = 0;
+
+// PublishConfig: flip to true to force-resend settings to relay immediately.
+input bool            PublishConfig = false;
 
 #import "mt4_bridge.dll"
    int  bridge_init();
@@ -104,7 +107,7 @@ void OnInit()
    for (int i = 0; i < g_filter_count; i++)
       filterStr += (i > 0 ? ", " : "") + IntegerToString(g_magic_filter[i]);
    PrintFormat("TRS: Master EA v1.40 started | EA magic filters: [%s] | CopyManual: %s | RiskMode: %s | RiskValue: %.4f",
-               filterStr, CopyManualTrades ? "ON" : "OFF", RiskMode, RiskValue);
+               filterStr, CopyManualTrades ? "ON" : "OFF", RiskModeString(), RiskValue);
 }
 
 void OnDeinit(const int reason) { EventKillTimer(); bridge_shutdown(); }
@@ -120,18 +123,30 @@ void OnTimer() {
 }
 
 // ── Publish risk config to relay via trading/config ───────────────────────────
+string RiskModeString()
+{
+   switch (RiskMode) {
+      case RISK_PERCENT:       return "percent";
+      case RISK_FIXED_LOT:     return "fixed_lot";
+      case RISK_FIXED_DOLLARS: return "fixed_dollars";
+      default:                 return "proportional";
+   }
+}
+
 void PublishRiskConfig()
 {
-   double equity = (MasterEquity > 0) ? MasterEquity : AccountEquity();
+   double equity  = (MasterEquity > 0) ? MasterEquity : AccountEquity();
+   string modeStr = RiskModeString();
+
    string json = StringFormat(
       "{\"master_equity\":%.2f,\"risk_mode\":\"%s\",\"risk_value\":%.4f}",
-      equity, RiskMode, RiskValue
+      equity, modeStr, RiskValue
    );
    uchar arr[];
    int len = StringToCharArray(json, arr, 0, StringLen(json));
    int res = send_config_event(arr, len);
    if (res == 0)
-      PrintFormat("TRS: Config published → equity=%.2f mode=%s value=%.4f", equity, RiskMode, RiskValue);
+      PrintFormat("TRS: Config published → equity=%.2f mode=%s value=%.4f", equity, modeStr, RiskValue);
    else
       PrintFormat("TRS: Config publish failed (err=%d)", res);
 }
