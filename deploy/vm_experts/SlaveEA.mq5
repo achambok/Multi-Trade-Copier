@@ -1,5 +1,5 @@
 #property copyright "TRS Slave EA MT5"
-#property version   "1.50"
+#property version   "1.60"
 
 #define MQTT_HOST   "172.16.21.1"
 #define MQTT_PORT   1883
@@ -24,24 +24,27 @@ input string AccountID = "vm_mt5_xm";
 
 int    g_handle    = -1;
 string g_topic     = "";
-int    g_retryTick = 0;   // counts timer ticks for retry backoff
 
-// ── Master→Slave position map ─────────────────────────────────────────────────
+// ── Master→Slave position/order map ──────────────────────────────────────────
 struct TicketMap {
    long   masterTicket;
-   ulong  dealTicket;    // actual MT5 deal/position ticket
+   ulong  slaveTicket;   // position ticket (market) or order ticket (pending)
+   int    order_type;    // original MT4 type (0-5)
+   double price;         // trigger price for pending orders
    double sl;
    double tp;
+   bool   isPending;
 };
 TicketMap g_map[];
 int       g_mapCount = 0;
 
-// ── Pending order queue (retry if symbol price not yet ready) ─────────────────
+// ── Pending/retry queue (market orders waiting for prices) ────────────────────
 struct PendingOrder {
    long   masterTicket;
    string symbol;
    int    orderType;
    double volume;
+   double price;
    double sl;
    double tp;
    int    retries;
@@ -70,7 +73,7 @@ void OnInit() {
    if (g_handle < 0) { Print("TRS Slave MT5: MQTT connect failed"); ExpertRemove(); return; }
    if (MQTT_Subscribe(g_handle, g_topic) < 0) { Print("TRS Slave MT5: Subscribe failed"); ExpertRemove(); return; }
    EventSetMillisecondTimer(100);
-   Print("TRS Slave MT5: ONLINE v1.50. Topic: ", g_topic);
+   Print("TRS Slave MT5: ONLINE v1.60. Topic: ", g_topic);
 }
 
 void OnDeinit(const int reason) {
@@ -79,10 +82,8 @@ void OnDeinit(const int reason) {
 }
 
 void OnTimer() {
-   // 1. Retry any pending orders whose prices weren't ready yet
    RetryPending();
 
-   // 2. Poll for new MQTT messages
    uchar buf[128];
    int received = MQTT_Receive(g_handle, buf, 128);
    if (received < 64) return;
@@ -90,60 +91,37 @@ void OnTimer() {
    VMTradePayload p;
    if (!UnpackPayload(buf, received, p)) return;
 
-   // Extract symbol — stop at first null byte
    int symLen = 0;
    while (symLen < 12 && p.symbol[symLen] != 0) symLen++;
    string sym = CharArrayToString(p.symbol, 0, symLen, CP_ACP);
-
    if (StringLen(sym) == 0) { Print("TRS Slave MT5: Empty symbol, skipping"); return; }
 
    PrintFormat("TRS Slave MT5: Recv ticket=%d sym='%s' type=%d vol=%.2f sl=%.5f tp=%.5f",
                p.ticket, sym, p.order_type, p.volume, p.sl, p.tp);
 
-   // ── Close signal ─────────────────────────────────────────────────────────
+   // ── Close/Cancel signal ───────────────────────────────────────────────────
    if (p.order_type == 10) {
       HandleClose(p.ticket);
       return;
    }
 
-   // ── Existing ticket — SL/TP modify ────────────────────────────────────────
+   // ── Existing ticket — modify ──────────────────────────────────────────────
    int mapIdx = FindMap(p.ticket);
    if (mapIdx >= 0) {
-      bool slChanged = MathAbs(g_map[mapIdx].sl - p.sl) > 0.000001;
-      bool tpChanged = MathAbs(g_map[mapIdx].tp - p.tp) > 0.000001;
-      if (!slChanged && !tpChanged) return;
-
-      if (!PositionSelectByTicket(g_map[mapIdx].dealTicket)) {
-         PrintFormat("TRS Slave MT5: PositionSelectByTicket failed deal=%d err=%d",
-                     g_map[mapIdx].dealTicket, GetLastError());
-         return;
-      }
-      MqlTradeRequest req = {};
-      MqlTradeResult  res = {};
-      req.action   = TRADE_ACTION_SLTP;
-      req.symbol   = PositionGetString(POSITION_SYMBOL);
-      req.position = g_map[mapIdx].dealTicket;
-      req.sl       = p.sl;
-      req.tp       = p.tp;
-      ResetLastError();
-      if (!OrderSend(req, res))
-         PrintFormat("TRS Slave MT5: Modify Error=%d retcode=%d deal=%d", GetLastError(), res.retcode, g_map[mapIdx].dealTicket);
-      else {
-         PrintFormat("TRS Slave MT5: Modified deal=%d sl=%.5f tp=%.5f", g_map[mapIdx].dealTicket, p.sl, p.tp);
-         g_map[mapIdx].sl = p.sl;
-         g_map[mapIdx].tp = p.tp;
-      }
+      HandleModify(mapIdx, p);
       return;
    }
 
-   // ── New trade — enqueue immediately ───────────────────────────────────────
-   if (p.order_type != 0 && p.order_type != 1) {
+   // ── New order ─────────────────────────────────────────────────────────────
+   bool isPend = (p.order_type >= 2 && p.order_type <= 5);
+   if (isPend) {
+      PlacePendingOrder(p.ticket, sym, p.order_type, p.volume, p.price, p.sl, p.tp);
+   } else if (p.order_type == 0 || p.order_type == 1) {
+      EnqueueOrder(p.ticket, sym, p.order_type, p.volume, p.price, p.sl, p.tp);
+      ProcessPending(g_pendingCount - 1);
+   } else {
       PrintFormat("TRS Slave MT5: Unknown order_type=%d, skipping", p.order_type);
-      return;
    }
-   EnqueueOrder(p.ticket, sym, p.order_type, p.volume, p.sl, p.tp);
-   // Attempt immediately — if prices not ready it stays in queue for RetryPending
-   ProcessPending(g_pendingCount - 1);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction& trans,
@@ -152,19 +130,133 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    if (trans.type == TRADE_TRANSACTION_DEAL_ADD) {
       PrintFormat("TRS Slave MT5: Deal deal=%d order=%d position=%d sym=%s vol=%.2f price=%.5f",
                   trans.deal, trans.order, trans.position, trans.symbol, trans.volume, trans.price);
-      // Store the POSITION ticket (not deal ticket) — PositionSelectByTicket requires it
       for (int i = 0; i < g_mapCount; i++) {
-         if (g_map[i].dealTicket == (ulong)trans.order) {
-            g_map[i].dealTicket = trans.position;
+         if (g_map[i].slaveTicket == (ulong)trans.order && !g_map[i].isPending) {
+            g_map[i].slaveTicket = trans.position;
             PrintFormat("TRS Slave MT5: Map updated master=%d → position=%d", g_map[i].masterTicket, trans.position);
             break;
+         }
+      }
+   }
+   // Pending order filled — reclassify as market position
+   if (trans.type == TRADE_TRANSACTION_ORDER_UPDATE) {
+      if (trans.order_state == ORDER_STATE_FILLED) {
+         for (int i = 0; i < g_mapCount; i++) {
+            if (g_map[i].slaveTicket == trans.order && g_map[i].isPending) {
+               g_map[i].isPending   = false;
+               // position ticket comes via DEAL_ADD above; set to order for now
+               g_map[i].slaveTicket = trans.order;
+               PrintFormat("TRS Slave MT5: Pending order=%d filled → now tracking as position", trans.order);
+               break;
+            }
          }
       }
    }
 }
 
 //─────────────────────────────────────────────────────────────────────────────
-// Close handler
+// Pending order placement (limit/stop)
+
+void PlacePendingOrder(long masterTkt, string sym, int orderType, double vol,
+                       double price, double sl, double tp) {
+   sym = ResolveSymbol(sym);
+   if (StringLen(sym) == 0) return;
+
+   if (!SymbolSelect(sym, true)) return;
+
+   double minLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   if (minLot > 0 && vol < minLot)  vol = minLot;
+   if (maxLot > 0 && vol > maxLot)  vol = maxLot;
+   if (lotStep > 0) vol = MathRound(vol / lotStep) * lotStep;
+   vol = NormalizeDouble(vol, 2);
+
+   ENUM_ORDER_TYPE mt5Type;
+   if      (orderType == 2) mt5Type = ORDER_TYPE_BUY_LIMIT;
+   else if (orderType == 3) mt5Type = ORDER_TYPE_SELL_LIMIT;
+   else if (orderType == 4) mt5Type = ORDER_TYPE_BUY_STOP;
+   else if (orderType == 5) mt5Type = ORDER_TYPE_SELL_STOP;
+   else return;
+
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+   req.action   = TRADE_ACTION_PENDING;
+   req.symbol   = sym;
+   req.volume   = vol;
+   req.type     = mt5Type;
+   req.price    = price;
+   req.sl       = sl;
+   req.tp       = tp;
+   req.magic    = MAGIC;
+   req.comment  = "TRS";
+
+   ResetLastError();
+   if (OrderSend(req, res)) {
+      PrintFormat("TRS Slave MT5: Pending placed order=%d sym=%s type=%d price=%.5f vol=%.2f",
+                  res.order, sym, orderType, price, vol);
+      AddMap(masterTkt, res.order, orderType, price, sl, tp, true);
+   } else {
+      PrintFormat("TRS Slave MT5: Pending order failed err=%d retcode=%d sym=%s type=%d price=%.5f",
+                  GetLastError(), res.retcode, sym, orderType, price);
+   }
+}
+
+//─────────────────────────────────────────────────────────────────────────────
+// Modify handler (market position or pending order)
+
+void HandleModify(int mapIdx, VMTradePayload& p) {
+   bool slChanged    = MathAbs(g_map[mapIdx].sl    - p.sl)    > 0.000001;
+   bool tpChanged    = MathAbs(g_map[mapIdx].tp    - p.tp)    > 0.000001;
+   bool priceChanged = g_map[mapIdx].isPending && (MathAbs(g_map[mapIdx].price - p.price) > 0.000001);
+   if (!slChanged && !tpChanged && !priceChanged) return;
+
+   ulong tkt = g_map[mapIdx].slaveTicket;
+
+   if (g_map[mapIdx].isPending) {
+      // Modify pending order price/SL/TP
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action = TRADE_ACTION_MODIFY;
+      req.order  = tkt;
+      req.price  = p.price;
+      req.sl     = p.sl;
+      req.tp     = p.tp;
+      ResetLastError();
+      if (!OrderSend(req, res))
+         PrintFormat("TRS Slave MT5: Pending Modify Error=%d retcode=%d order=%d", GetLastError(), res.retcode, tkt);
+      else {
+         PrintFormat("TRS Slave MT5: Pending Modified order=%d price=%.5f sl=%.5f tp=%.5f", tkt, p.price, p.sl, p.tp);
+         g_map[mapIdx].price = p.price;
+         g_map[mapIdx].sl    = p.sl;
+         g_map[mapIdx].tp    = p.tp;
+      }
+   } else {
+      // Modify market position SL/TP
+      if (!PositionSelectByTicket(tkt)) {
+         PrintFormat("TRS Slave MT5: PositionSelectByTicket failed pos=%d err=%d", tkt, GetLastError());
+         return;
+      }
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action   = TRADE_ACTION_SLTP;
+      req.symbol   = PositionGetString(POSITION_SYMBOL);
+      req.position = tkt;
+      req.sl       = p.sl;
+      req.tp       = p.tp;
+      ResetLastError();
+      if (!OrderSend(req, res))
+         PrintFormat("TRS Slave MT5: Modify Error=%d retcode=%d pos=%d", GetLastError(), res.retcode, tkt);
+      else {
+         PrintFormat("TRS Slave MT5: Modified pos=%d sl=%.5f tp=%.5f", tkt, p.sl, p.tp);
+         g_map[mapIdx].sl = p.sl;
+         g_map[mapIdx].tp = p.tp;
+      }
+   }
+}
+
+//─────────────────────────────────────────────────────────────────────────────
+// Close/Cancel handler
 
 void HandleClose(long masterTicket) {
    int mapIdx = FindMap(masterTicket);
@@ -173,38 +265,51 @@ void HandleClose(long masterTicket) {
       return;
    }
 
-   ulong dealTkt = g_map[mapIdx].dealTicket;
-   if (!PositionSelectByTicket(dealTkt)) {
-      PrintFormat("TRS Slave MT5: CLOSE — PositionSelectByTicket failed deal=%d err=%d", dealTkt, GetLastError());
+   ulong tkt = g_map[mapIdx].slaveTicket;
+
+   if (g_map[mapIdx].isPending) {
+      // Cancel pending order
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action = TRADE_ACTION_REMOVE;
+      req.order  = tkt;
+      ResetLastError();
+      if (!OrderSend(req, res))
+         PrintFormat("TRS Slave MT5: Cancel pending Error=%d retcode=%d order=%d", GetLastError(), res.retcode, tkt);
+      else
+         PrintFormat("TRS Slave MT5: Cancelled pending order=%d", tkt);
       RemoveMap(mapIdx);
       return;
    }
 
-   string sym     = PositionGetString(POSITION_SYMBOL);
-   double vol     = PositionGetDouble(POSITION_VOLUME);
-   ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   // Close market position
+   if (!PositionSelectByTicket(tkt)) {
+      PrintFormat("TRS Slave MT5: CLOSE — PositionSelectByTicket failed pos=%d err=%d", tkt, GetLastError());
+      RemoveMap(mapIdx);
+      return;
+   }
 
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   string sym  = PositionGetString(POSITION_SYMBOL);
+   double vol  = PositionGetDouble(POSITION_VOLUME);
+   ENUM_POSITION_TYPE ptype = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
    req.action   = TRADE_ACTION_DEAL;
    req.symbol   = sym;
    req.volume   = vol;
-   req.position = dealTkt;
+   req.position = tkt;
    req.comment  = "TRS Close";
    req.magic    = MAGIC;
 
    if (ptype == POSITION_TYPE_BUY) {
       req.type  = ORDER_TYPE_SELL;
-      req.price = bid;
+      req.price = SymbolInfoDouble(sym, SYMBOL_BID);
    } else {
       req.type  = ORDER_TYPE_BUY;
-      req.price = ask;
+      req.price = SymbolInfoDouble(sym, SYMBOL_ASK);
    }
 
-   // Try all filling modes
    ENUM_ORDER_TYPE_FILLING fills[3];
    fills[0] = ORDER_FILLING_IOC;
    fills[1] = ORDER_FILLING_FOK;
@@ -214,7 +319,7 @@ void HandleClose(long masterTicket) {
       req.type_filling = fills[f];
       ResetLastError();
       if (OrderSend(req, res)) {
-         PrintFormat("TRS Slave MT5: Closed deal=%d sym=%s vol=%.2f filling=%d", dealTkt, sym, vol, f);
+         PrintFormat("TRS Slave MT5: Closed pos=%d sym=%s vol=%.2f filling=%d", tkt, sym, vol, f);
          RemoveMap(mapIdx);
          return;
       }
@@ -224,14 +329,16 @@ void HandleClose(long masterTicket) {
 }
 
 //─────────────────────────────────────────────────────────────────────────────
-// Pending queue
+// Market order retry queue
 
-void EnqueueOrder(long masterTkt, string sym, int oType, double vol, double sl, double tp) {
+void EnqueueOrder(long masterTkt, string sym, int oType, double vol,
+                  double price, double sl, double tp) {
    ArrayResize(g_pending, g_pendingCount + 1);
    g_pending[g_pendingCount].masterTicket = masterTkt;
    g_pending[g_pendingCount].symbol       = sym;
    g_pending[g_pendingCount].orderType    = oType;
    g_pending[g_pendingCount].volume       = vol;
+   g_pending[g_pendingCount].price        = price;
    g_pending[g_pendingCount].sl           = sl;
    g_pending[g_pendingCount].tp           = tp;
    g_pending[g_pendingCount].retries      = 0;
@@ -252,7 +359,6 @@ void RetryPending() {
 void ProcessPending(int idx) {
    if (idx < 0 || idx >= g_pendingCount) return;
 
-   // Give up after 50 retries (~5 seconds at 100ms timer)
    if (g_pending[idx].retries > 50) {
       PrintFormat("TRS Slave MT5: Giving up on sym=%s after 50 retries", g_pending[idx].symbol);
       RemovePending(idx);
@@ -260,33 +366,26 @@ void ProcessPending(int idx) {
    }
    g_pending[idx].retries++;
 
-   // Already mapped (duplicate message)
    if (FindMap(g_pending[idx].masterTicket) >= 0) { RemovePending(idx); return; }
 
    string sym = g_pending[idx].symbol;
    sym = ResolveSymbol(sym);
    if (StringLen(sym) == 0) {
-      if (g_pending[idx].retries >= 3) RemovePending(idx); // give up after 3 resolve attempts
+      if (g_pending[idx].retries >= 3) RemovePending(idx);
       return;
    }
-   // Update stored symbol with resolved name for subsequent retries
    g_pending[idx].symbol = sym;
 
-   if (!SymbolSelect(sym, true)) {
-      PrintFormat("TRS Slave MT5: SymbolSelect failed '%s' retry=%d err=%d", sym, g_pending[idx].retries, GetLastError());
-      return;
-   }
+   if (!SymbolSelect(sym, true)) return;
 
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-
    if (ask <= 0 || bid <= 0) {
       if (g_pending[idx].retries == 1)
          PrintFormat("TRS Slave MT5: Waiting for price '%s'...", sym);
-      return;  // try again next tick
+      return;
    }
 
-   // Clamp to broker lot limits
    double minLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
    double maxLot  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
@@ -328,7 +427,8 @@ void ProcessPending(int idx) {
       if (OrderSend(req, res)) {
          PrintFormat("TRS Slave MT5: OK sym=%s vol=%.2f price=%.5f filling=%d order=%d deal=%d",
                      sym, vol, reqPrice, f, res.order, res.deal);
-         AddMap(g_pending[idx].masterTicket, res.order, g_pending[idx].sl, g_pending[idx].tp);
+         AddMap(g_pending[idx].masterTicket, res.order, g_pending[idx].orderType,
+                reqPrice, g_pending[idx].sl, g_pending[idx].tp, false);
          RemovePending(idx);
          return;
       }
@@ -336,7 +436,6 @@ void ProcessPending(int idx) {
                   f, GetLastError(), res.retcode, res.comment);
       if (res.retcode != 10030) break;
    }
-   // Failed this attempt — stays in queue for next retry
 }
 
 //─────────────────────────────────────────────────────────────────────────────
@@ -348,12 +447,16 @@ int FindMap(long masterTkt) {
    return -1;
 }
 
-void AddMap(long masterTkt, ulong orderOrDeal, double sl, double tp) {
+void AddMap(long masterTkt, ulong slaveTkt, int orderType, double price,
+            double sl, double tp, bool isPending) {
    ArrayResize(g_map, g_mapCount + 1);
    g_map[g_mapCount].masterTicket = masterTkt;
-   g_map[g_mapCount].dealTicket   = orderOrDeal;
+   g_map[g_mapCount].slaveTicket  = slaveTkt;
+   g_map[g_mapCount].order_type   = orderType;
+   g_map[g_mapCount].price        = price;
    g_map[g_mapCount].sl           = sl;
    g_map[g_mapCount].tp           = tp;
+   g_map[g_mapCount].isPending    = isPending;
    g_mapCount++;
 }
 
@@ -390,7 +493,6 @@ double ReadDouble(const uchar& buf[], int offset) {
 }
 
 // ResolveSymbol tries the received symbol and common broker suffix variants.
-// Returns the first symbol whose bid/ask is available on this broker, or "".
 string ResolveSymbol(string sym) {
    string strips[6], adds[6];
    strips[0]="m"; strips[1]=".pro"; strips[2]=".ecn";
@@ -398,10 +500,8 @@ string ResolveSymbol(string sym) {
    adds[0]  ="m"; adds[1]  =".pro"; adds[2]  =".ecn";
    adds[3]  =".r"; adds[4] =".raw"; adds[5]  =".cf";
 
-   // 1. Try as-is
    if (SymbolSelect(sym, true) && SymbolInfoDouble(sym, SYMBOL_ASK) > 0) return sym;
 
-   // 2. Derive base by stripping known suffixes
    string base = sym;
    for (int i = 0; i < 6; i++) {
       int slen  = StringLen(sym);
@@ -412,13 +512,11 @@ string ResolveSymbol(string sym) {
       }
    }
 
-   // 3. Try base
    if (base != sym && SymbolSelect(base, true) && SymbolInfoDouble(base, SYMBOL_ASK) > 0) {
       PrintFormat("TRS Slave MT5: Resolved '%s' → '%s'", sym, base);
       return base;
    }
 
-   // 4. Try base + each suffix
    for (int i = 0; i < 6; i++) {
       string c = base + adds[i];
       if (SymbolSelect(c, true) && SymbolInfoDouble(c, SYMBOL_ASK) > 0) {
