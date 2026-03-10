@@ -146,7 +146,7 @@ void PublishRiskConfig()
    int len = StringToCharArray(json, arr, 0, StringLen(json));
    int res = send_config_event(arr, len);
    if (res == 0)
-      PrintFormat("TRS: Config published → equity=%.2f mode=%s value=%.4f", equity, modeStr, RiskValue);
+      PrintFormat("TRS: Config published -> equity=%.2f mode=%s value=%.4f", equity, modeStr, RiskValue);
    else
       PrintFormat("TRS: Config publish failed (err=%d)", res);
 }
