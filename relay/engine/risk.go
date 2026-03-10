@@ -5,18 +5,27 @@ import "math"
 // RiskMode constants
 const (
 	RiskModeProportional = "proportional" // masterLot * (slaveEquity / masterEquity)
-	RiskModePercent      = "percent"      // slaveEquity * riskValue% / (price * contractSize); simplified to riskValue% of masterLot normalized
-	RiskModeFixedLot     = "fixed_lot"    // riskValue = fixed lot size
-	RiskModeFixedDollars = "fixed_dollars" // riskValue = $ amount; lot = dollars / (price * pipValue) — approximated
+	RiskModePercent      = "percent"      // masterLot * (riskValue / 100) — lot multiplier
+	RiskModeFixedLot     = "fixed_lot"    // always riskValue lots
+	RiskModeFixedDollars = "fixed_dollars" // risk exactly riskValue USD per trade (approximated)
 )
 
 // ComputeLot calculates the slave lot size based on the risk mode.
 //
-//   proportional  – classical equity scaling (default)
-//   percent       – riskValue is % of slave equity to risk; approximated as masterLot * (slaveEquity * riskValue/100) / (masterEquity * riskValue/100)
-//                   effectively the same as proportional but riskValue acts as a cap/scale on the equity fraction
-//   fixed_lot     – every trade uses exactly riskValue lots
-//   fixed_dollars – every trade risks exactly riskValue USD; lot = riskValue / masterEquity * masterLot (best-effort without tick data)
+//   proportional  – slaveLot = masterLot × (slaveEquity / masterEquity)
+//                   Equal equity → 1:1 copy. Half equity → half lot.
+//
+//   percent       – slaveLot = masterLot × (riskValue / 100)
+//                   A direct lot multiplier. riskValue=100 → same lot as master.
+//                   riskValue=50 → half. riskValue=200 → double.
+//                   Example: master trades 1.0 lot, riskValue=2 → slave trades 0.02 lots.
+//                   Use riskValue=100 for a 1:1 copy regardless of equity.
+//
+//   fixed_lot     – every trade uses exactly riskValue lots regardless of master size.
+//                   riskValue=0 → mirror master lot exactly.
+//
+//   fixed_dollars – every trade risks exactly riskValue USD.
+//                   Approximated as: lot = (riskValue / masterEquity) × masterLot
 func ComputeLot(masterLot, masterEquity, slaveEquity float64, mode string, riskValue float64) float64 {
 	switch mode {
 	case RiskModeFixedLot:
@@ -26,21 +35,18 @@ func ComputeLot(masterLot, masterEquity, slaveEquity float64, mode string, riskV
 		return masterLot
 
 	case RiskModeFixedDollars:
-		// Approximate: lot = fixedDollars / masterEquity * masterLot
-		// (proportional to master risk without live tick data)
 		if masterEquity > 0 && riskValue > 0 {
 			return roundLot(masterLot * riskValue / masterEquity)
 		}
 		return masterLot
 
 	case RiskModePercent:
-		// Slave risks riskValue% of its own equity proportionally to master
-		if masterEquity > 0 && slaveEquity > 0 && riskValue > 0 {
-			slaveFraction := slaveEquity * (riskValue / 100.0)
-			masterFraction := masterEquity * (riskValue / 100.0)
-			return roundLot(masterLot * slaveFraction / masterFraction)
+		// Lot multiplier: riskValue is the percentage of master lot to trade.
+		// riskValue=100 → 1:1 copy, riskValue=50 → half, riskValue=200 → double.
+		if riskValue > 0 {
+			return roundLot(masterLot * riskValue / 100.0)
 		}
-		return ScaleLot(masterLot, masterEquity, slaveEquity)
+		return masterLot
 
 	default: // proportional
 		return ScaleLot(masterLot, masterEquity, slaveEquity)
